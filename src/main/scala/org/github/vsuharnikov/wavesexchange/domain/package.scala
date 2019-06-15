@@ -2,11 +2,14 @@ package org.github.vsuharnikov.wavesexchange
 
 import cats.instances.int.catsKernelStdGroupForInt
 import cats.instances.map.catsKernelStdMonoidForMap
+import cats.syntax.group._
 import cats.syntax.show.showInterpolator
 import cats.{Group, Monoid, Show}
 import io.estatico.newtype.macros.newtype
 import io.estatico.newtype.ops._
 import play.api.libs.json._
+
+import scala.collection.immutable.{Queue, TreeMap}
 
 // For simplicity there is one file for simple models
 package object domain {
@@ -37,6 +40,7 @@ package object domain {
     }
   }
 
+  type AssetPrice = Int
   type AssetAmount = Int
 
   @newtype case class Portfolio(p: Map[AssetId, AssetAmount])
@@ -57,7 +61,9 @@ package object domain {
     implicit val json: Format[ClientId] = strFormat.coerce
   }
 
-  @newtype case class ClientsPortfolio(p: Map[ClientId, Portfolio])
+  @newtype case class ClientsPortfolio(p: Map[ClientId, Portfolio]) {
+    def values: Iterable[Portfolio] = p.values
+  }
   object ClientsPortfolio {
     implicit val group: Group[ClientsPortfolio] = new Group[ClientsPortfolio] {
       private val monoid: Monoid[ClientsPortfolio] = catsKernelStdMonoidForMap[ClientId, Portfolio].coerce
@@ -69,6 +75,42 @@ package object domain {
 
     implicit val show: Show[ClientsPortfolio] =
       _.p.toVector.sortBy(_._1.id).map { case (clientId, p) => show"$clientId: $p" }.mkString("\n")
-    def apply(pair: (ClientId, Portfolio)): ClientsPortfolio = ClientsPortfolio(Map(pair))
+    def apply(pair: (ClientId, Portfolio)*): ClientsPortfolio = {
+      val xs = pair.foldLeft(Map.empty[ClientId, Portfolio]) {
+        case (r, (id, p)) => r.updated(id, r.getOrElse(id, Monoid[Portfolio].empty) |+| p)
+      }
+      ClientsPortfolio(xs)
+    }
+  }
+
+  import Side.Orders
+
+  @newtype case class Side(orders: Orders) {
+    def appendOrder(x: Order): Side = Side(Side.appendOrder(orders, x))
+    def appendOrders(xs: Iterable[Order]): Side = Side(xs.foldLeft(orders)(Side.appendOrder))
+    def withoutBest: Side = Side {
+      if (orders.isEmpty) orders
+      else {
+        val (price, q) = orders.head
+        if (q.lengthCompare(1) == 0) orders.tail
+        else orders.updated(price, q.tail)
+      }
+    }
+
+    def isEmpty: Boolean = orders.isEmpty
+    def best: Option[Order] = orders.headOption.flatMap(_._2.headOption)
+    def allOrders: Iterable[Order] = orders.values.flatten
+  }
+
+  object Side {
+    type Orders = TreeMap[AssetPrice, Queue[Order]]
+
+    val asksPriceOrder: Ordering[AssetPrice] = Ordering.apply
+    val bidsPriceOrder: Ordering[AssetPrice] = asksPriceOrder.reverse
+
+    def empty(tpe: OrderType): Side = Side(TreeMap.empty(if (tpe == OrderType.Ask) asksPriceOrder else bidsPriceOrder))
+
+    private def appendOrder(orders: Orders, x: Order): Orders =
+      orders.updated(x.pricePerOne, orders.getOrElse(x.pricePerOne, Queue.empty).enqueue(x))
   }
 }

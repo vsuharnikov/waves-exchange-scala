@@ -11,47 +11,53 @@ import org.github.vsuharnikov.wavesexchange.source.Csv
 
 import scala.io.Source
 
-object MainApp extends App {
-  val baseDir = "/Users/freezy/projects/private/job-test/waves-exchange"
-  val assets = Dollar :: ('A' to 'D').map(x => AssetId(x.toString)).toList
+object MainApp {
+  def main(args: Array[String]): Unit = {
+    val baseDir = args.headOption.getOrElse(
+      throw new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
 
-  val clientsFile = Source.fromFile(new File(s"$baseDir/clients.txt"))
-  val ordersFile = Source.fromFile(new File(s"$baseDir/orders.txt"))
+    val assets = Dollar :: ('A' to 'D').map(x => AssetId(x.toString)).toList
 
-  val input = for {
-    clients <- Csv.clients(clientsFile.getLines().toList, assets)
-    orders <- Csv.orders(ordersFile.getLines().toList)
-  } yield (clients, orders)
+    val clientsFile = Source.fromFile(new File(s"$baseDir/clients.txt"))
+    val ordersFile = Source.fromFile(new File(s"$baseDir/orders.txt"))
 
-  input match {
-    case Left(e) => System.err.println(e)
-    case Right((clients, orders)) =>
-      val (finalOrderBooks, executedPortfolio) =
-        orders.zipWithIndex.foldLeft((Map.empty[AssetPair, OrderBook], clients)) {
-          case (curr @ (currOrderBooks, allPortfolio), (order, i)) =>
-            val clientPortfolio = allPortfolio.p.getOrElse(order.client, Monoid.empty[Portfolio])
-            validate(order, clientPortfolio) match {
-              case Left(e) =>
-                System.err.println(s"[$i] Can't apply $order: $e")
-                curr
+    val input = for {
+      clients <- Csv.clients(clientsFile.getLines().toList, assets)
+      orders <- Csv.orders(ordersFile.getLines().toList)
+    } yield (clients, orders)
 
-              case Right(_) =>
-                val reservedAllPortfolio = allPortfolio |+| ClientsPortfolio(Map(order.client -> order.spend))
+    input match {
+      case Left(e) => System.err.println(e)
+      case Right((clients, orders)) =>
+        val (finalObs, finalPort) =
+          orders.zipWithIndex.foldLeft((Map.empty[AssetPair, OrderBook], clients)) {
+            case (curr @ (currObs, origAllPort), (order, i)) =>
+              val clientPort = origAllPort.p.getOrElse(order.client, Monoid.empty[Portfolio])
+              validate(order, clientPort) match {
+                case Left(e) =>
+                  System.err.println(s"[$i] Can't apply $order: $e")
+                  curr
 
-                val orderBook = currOrderBooks.getOrElse(order.pair, OrderBook.empty)
-                val (updatedOrderBook, portfolioChanges) = append(orderBook, order)
+                case Right(_) =>
+                  val ob = currObs.getOrElse(order.pair, OrderBook.empty)
+                  val (updatedOb, updatedAllPort) = append(ob, order, origAllPort)
+                  (currObs.updated(order.pair, updatedOb), updatedAllPort)
+              }
+          }
 
-                (currOrderBooks.updated(order.pair, updatedOrderBook), reservedAllPortfolio |+| portfolioChanges)
-            }
-        }
+        val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(finalObs.values.map(_.clientsPortfolio)))
+        val finalClients = finalPort |+| obPortfolio
+        val assetsAfter = Monoid.combineAll(finalClients.values)
 
-      println(s"Final order books:\n${finalOrderBooks.mkString("\n")}")
-      println(show"Executed portfolio:\n$executedPortfolio")
-
-      // Cancel
-      val finalPortfolio = executedPortfolio |+|
-        Monoid.combineAll(finalOrderBooks.values.map(_.clientsPortfolio).map(Group[ClientsPortfolio].inverse))
-
-      println(show"Final portfolio:\n$finalPortfolio")
+        println(show"""Assets before:
+                      |${countAssets(clients, OrderBook.empty)}
+                      |Assets after:
+                      |$assetsAfter
+                      |Clients portfolio before:
+                      |$clients
+                      |Clients portfolio after:
+                      |$finalClients"""".stripMargin)
+        println(s"Final order books:\n${finalObs.mkString("\n")}")
+    }
   }
 }

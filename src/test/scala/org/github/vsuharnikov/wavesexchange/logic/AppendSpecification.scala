@@ -1,8 +1,9 @@
 package org.github.vsuharnikov.wavesexchange.logic
 
 import cats.implicits._
-import cats.kernel.Monoid
+import cats.kernel.Group
 import org.github.vsuharnikov.wavesexchange.collections.MapOps
+import org.github.vsuharnikov.wavesexchange.domain.Implicits.SideOps
 import org.github.vsuharnikov.wavesexchange.domain._
 import org.github.vsuharnikov.wavesexchange.serde.DebugJson._
 import org.scalacheck.Prop.{BooleanOperators, forAll}
@@ -33,19 +34,19 @@ object AppendSpecification extends Properties("logic.append") {
     orderTpe <- Gen.oneOf(OrderType.Ask, OrderType.Bid)
     orderBook <- orderBookGen(defaultPair, spread, maxAsk).filterNot { ob =>
       orderTpe match {
-        case OrderType.Ask => ob.bids.side.isEmpty
-        case OrderType.Bid => ob.asks.side.isEmpty
+        case OrderType.Ask => ob.bids.isEmpty
+        case OrderType.Bid => ob.asks.isEmpty
       }
     }
     (newOrderPrices, amounts) = orderTpe match {
       case OrderType.Ask =>
-        (orderBook.bids.side.headOption, orderBook.bids.side.lastOption) match {
-          case (Some(t), Some(f)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.bids.side.map(_.amount).min)
+        (orderBook.bids.best, orderBook.bids.worst) match {
+          case (Some(t), Some(f)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.bids.minAmount)
           case _                  => throw new IllegalStateException("Impossibru!")
         }
       case OrderType.Bid =>
-        (orderBook.asks.side.headOption, orderBook.asks.side.lastOption) match {
-          case (Some(f), Some(t)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.asks.side.map(_.amount).min)
+        (orderBook.asks.best, orderBook.asks.worst) match {
+          case (Some(f), Some(t)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.asks.minAmount)
           case _                  => throw new IllegalStateException("Impossibru!")
         }
     }
@@ -65,14 +66,6 @@ object AppendSpecification extends Properties("logic.append") {
   //    } yield (orderBook, order)
   //  }
 
-  property("all receive only a positive amount of assets") = forAll(testGen) {
-    case (origOb, order) =>
-      val (_, updatedPortfolio) = append(origOb, order)
-
-      s"original order book:\n${toJson(origOb)}\norder:\n${toJson(order)}\nportfolio:\n$updatedPortfolio" |:
-        updatedPortfolio.p.values.flatMap(_.p.values).forall(_ >= 0)
-  }
-
   property("submitter receives >= expected") = forAll(overlappingGen) {
     case (origOb, order) =>
       val (_, updatedPortfolio) = append(origOb, order)
@@ -84,20 +77,32 @@ object AppendSpecification extends Properties("logic.append") {
 
       val prop = toCheck.forall { case (_, (expected, actual)) => actual >= expected }
 
-      s"original order book:\n${toJson(origOb)}\norder:\n${toJson(order)}\nto check:\n$toCheckStr" |:
-        prop
+      s"""original order book:
+         |${toJson(origOb)}
+         |order:
+         |${toJson(order)}
+         |to check:
+         |$toCheckStr""".stripMargin |: prop
   }
 
-  property("coins invariant") = forAll(testGen) {
+  property("assets invariant") = forAll(testGen) {
     case (origOb, order) =>
-      val origPortfolio = createPortfolio(origOb.clientsPortfolio |+| order.clientSpend)
-      val coinsBefore = countCoins(origPortfolio)
+      val origPort = Group[ClientsPortfolio].inverse(origOb.clientsPortfolio |+| order.clientSpend)
+      val (updatedOb, updatedPort) = append(origOb, order, origPort)
 
-      val (updatedOb, updatedPortfolio) = append(origOb, order)
-      val coinsAfter = countCoins(createPortfolio(updatedOb.clientsPortfolio) |+| updatedPortfolio)
+      val assetsBefore = countAssets(origPort, origOb)
+      val assetsAfter = countAssets(updatedPort, updatedOb)
 
-      s"original order book:\n${toJson(origOb)}\norder:\n${toJson(order)}\ncoins before:\n$coinsBefore\ncoins after:\n$coinsAfter" |:
-        coinsBefore.p.toSet == coinsAfter.p.toSet
+      s"""original portfolio:
+         |$origPort
+         |original order book:
+         |${toJson(origOb)}
+         |order:
+         |${toJson(order)}
+         |assets before:
+         |$assetsBefore
+         |assets after:
+         |$assetsAfter""".stripMargin |: assetsBefore.p.toSet == assetsAfter.p.toSet
   }
 
   private def orderBookGen(pair: AssetPair, spread: Range, maxAsk: Int): Gen[OrderBook] = {
@@ -118,12 +123,7 @@ object AppendSpecification extends Properties("logic.append") {
       amount <- Gen.choose(amounts.start, amounts.end)
     } yield Order(clientId, tpe, pair, pricePerOne, amount)
 
-  private def clientIdGen: Gen[ClientId] = Gen.choose(clientsNumber.start, clientsNumber.end).map(x => ClientId(x.toString))
+  private def clientIdGen: Gen[ClientId] =
+    Gen.choose(clientsNumber.start, clientsNumber.end).map(x => ClientId(x.toString))
 
-  private def countCoins(xs: ClientsPortfolio): Portfolio = xs.p.values.fold(Monoid[Portfolio].empty)(_ |+| _)
-
-  private def createPortfolio(xs: ClientsPortfolio): ClientsPortfolio =
-    ClientsPortfolio(xs.p.map { case (k, v) => k -> minus(v) })
-
-  private def minus(p: Portfolio): Portfolio = Portfolio(p.p.map { case (k, v) => k -> -v })
 }
