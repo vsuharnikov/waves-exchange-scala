@@ -62,6 +62,7 @@ package object domain {
       override def empty: Portfolio = monoid.empty
       override def combine(x: Portfolio, y: Portfolio): Portfolio = monoid.combine(x, y)
     }
+    // overriding toString doesn't work for newtypes
     implicit val show: Show[Portfolio] = _.p.map { case (assetId, amount) => show"$amount $assetId" }.mkString(", ")
     def apply(pair: (AssetId, AssetAmount)): Portfolio = Portfolio(Map(pair))
   }
