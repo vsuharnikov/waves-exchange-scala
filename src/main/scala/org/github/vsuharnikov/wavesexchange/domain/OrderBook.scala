@@ -13,22 +13,17 @@ object OrderBook {
   )
 
   final implicit class Ops(val self: OrderBook) extends AnyVal {
-    def all: Iterable[Order] = self.asks.orders.values.flatten ++ self.bids.orders.values.flatten
-    def best(tpe: OrderType): Option[Order] = self.side(tpe).best
-    def side(tpe: OrderType): Side = if (tpe == OrderType.Bid) self.bids else self.asks
+    import self._
 
-    def append(order: Order): OrderBook =
-      if (order.tpe == OrderType.Ask) self.copy(asks = self.asks.appendOrder(order))
-      else self.copy(bids = self.bids.appendOrder(order))
+    def all: Iterable[Order] = asks.orders.values.flatten ++ bids.orders.values.flatten
+    def best(tpe: OrderType): Option[Order] = side(tpe).best
+    def side(tpe: OrderType): Side = tpe.askBid(asks, bids)
 
-    def removeBest(tpe: OrderType): OrderBook =
-      if (tpe == OrderType.Ask) self.copy(asks = self.asks.withoutBest)
-      else self.copy(bids = self.bids.withoutBest)
+    def append(order: Order): OrderBook = order.tpe.askBid(copy(asks = asks.appendOrder(order)), copy(bids = bids.appendOrder(order)))
+    def removeBest(tpe: OrderType): OrderBook = tpe.askBid(copy(asks = asks.withoutBest), copy(bids = bids.withoutBest))
+    def replaceBestBy(order: Order): OrderBook = removeBest(order.tpe).append(order)
 
-    def replaceBestBy(order: Order): OrderBook = self.removeBest(order.tpe).append(order)
-
-    def clientsPortfolio: ClientsPortfolio = collectClientsPortfolio(self.all)
-
+    def clientsPortfolio: ClientsPortfolio = collectClientsPortfolio(all)
     private def collectClientsPortfolio(xs: Iterable[Order]): ClientsPortfolio =
       Monoid[ClientsPortfolio].combineAll(xs.map(_.clientSpend))
   }

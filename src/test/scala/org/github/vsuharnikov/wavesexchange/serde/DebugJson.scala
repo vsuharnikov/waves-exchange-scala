@@ -1,9 +1,28 @@
 package org.github.vsuharnikov.wavesexchange.serde
 
+import io.estatico.newtype.ops._
 import org.github.vsuharnikov.wavesexchange.domain._
 import play.api.libs.json._
 
 object DebugJson {
+  private val strFormat: Format[String] = Format(
+    {
+      case JsString(x) => JsSuccess(x)
+      case x           => JsError(s"Can't read '$x' as string")
+    },
+    JsString(_)
+  )
+
+  private val charFormat: Format[Char] = Format(
+    strFormat.collect(JsonValidationError("Required a char, but provided a string")) { case x if x.length == 1 => x.head },
+    strFormat.contramap(_.toString)
+  )
+
+  implicit val assetId: Format[AssetId] = charFormat.coerce[Format[AssetId]]
+  implicit val assetPair: Format[AssetPair] = Json.format[AssetPair]
+
+  implicit val clientId: Format[ClientId] = strFormat.coerce[Format[ClientId]]
+
   implicit val orderTypeJson: Format[OrderType] = Format[OrderType](
     {
       case JsString(x) =>
@@ -13,10 +32,8 @@ object DebugJson {
           case _     => JsError(s"Can't parse as OrderType: JsString($x)")
         }
       case x => JsError(s"Can't parse as OrderType: $x")
-    }, {
-      case OrderType.Ask => JsString("Ask")
-      case OrderType.Bid => JsString("Bid")
-    }
+    },
+    x => JsString(x.askBid("Ask", "Bid"))
   )
 
   implicit val orderJson: Format[Order] = Json.format[Order]

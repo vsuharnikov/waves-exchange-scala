@@ -13,7 +13,7 @@ import scala.io.Source
 import scala.reflect.ClassTag
 
 object MainApp {
-  def main(args: Array[String]): Unit = {
+  def main(args: Array[String]): Unit = measure {
     val baseDir =
       args.headOption.getOrElse(throw new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
 
@@ -65,4 +65,10 @@ object MainApp {
             (updatedAllPort, currObs.updated(order.pair, updatedOb))
         }
     }
+
+  def measure(f: => Unit): Unit = {
+    val s = System.nanoTime()
+    f
+    println(s"Done in ${System.nanoTime() - s}ns")
+  }
 }

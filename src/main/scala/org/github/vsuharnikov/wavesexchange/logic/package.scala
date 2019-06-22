@@ -49,8 +49,7 @@ package object logic {
   }
 
   private def overlaps(counter: Order, submitted: Order): Boolean =
-    if (submitted.tpe == OrderType.Ask) submitted.pricePerOne <= counter.pricePerOne
-    else submitted.pricePerOne >= counter.pricePerOne
+    submitted.tpe.askBid(submitted.pricePerOne <= counter.pricePerOne, submitted.pricePerOne >= counter.pricePerOne)
 
   def countAssets(allPortfolio: ClientsPortfolio, orderBooks: Map[AssetPair, OrderBook]): Portfolio = {
     val obPortfolios = Monoid.combineAll(orderBooks.values.map(_.clientsPortfolio))

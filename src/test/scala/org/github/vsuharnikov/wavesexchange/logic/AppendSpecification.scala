@@ -33,23 +33,18 @@ object AppendSpecification extends Properties("logic.append") {
     maxAsk <- Gen.choose(spreadEnd, Int.MaxValue)
     orderTpe <- Gen.oneOf(OrderType.Ask, OrderType.Bid)
     orderBook <- orderBookGen(defaultPair, spread, maxAsk).filterNot { ob =>
-      orderTpe match {
-        case OrderType.Ask => ob.bids.isEmpty
-        case OrderType.Bid => ob.asks.isEmpty
+      orderTpe.askBid(ob.bids.isEmpty, ob.asks.isEmpty)
+    }
+    (newOrderPrices, amounts) = orderTpe.askBid(
+      (orderBook.bids.best, orderBook.bids.worst) match {
+        case (Some(t), Some(f)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.bids.minAmount)
+        case _                  => throw new IllegalStateException("Impossibru!")
+      },
+      (orderBook.asks.best, orderBook.asks.worst) match {
+        case (Some(f), Some(t)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.asks.minAmount)
+        case _                  => throw new IllegalStateException("Impossibru!")
       }
-    }
-    (newOrderPrices, amounts) = orderTpe match {
-      case OrderType.Ask =>
-        (orderBook.bids.best, orderBook.bids.worst) match {
-          case (Some(t), Some(f)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.bids.minAmount)
-          case _                  => throw new IllegalStateException("Impossibru!")
-        }
-      case OrderType.Bid =>
-        (orderBook.asks.best, orderBook.asks.worst) match {
-          case (Some(f), Some(t)) => (f.pricePerOne to t.pricePerOne, 1 to orderBook.asks.minAmount)
-          case _                  => throw new IllegalStateException("Impossibru!")
-        }
-    }
+    )
     order <- orderGen(defaultPair, orderTpe, newOrderPrices, amounts)
   } yield (orderBook, order)
 

@@ -10,18 +10,18 @@ object Order {
   implicit val show: Show[Order] = _.toString
 
   final implicit class Ops(val self: Order) extends AnyVal {
-    def clientSpend: ClientsPortfolio = ClientsPortfolio(Map(self.client -> spend))
+    import self._
 
-    def spend: Portfolio = spend(self.pricePerOne, self.amount)
+    def clientSpend: ClientsPortfolio = ClientsPortfolio(client -> spend)
+
+    def spend: Portfolio = spend(pricePerOne, amount)
     def spend(executedPricePerOne: Int, executedAmount: Int): Portfolio = Portfolio {
-      if (self.tpe == OrderType.Ask) Map(self.pair.amountId -> -executedAmount)
-      else Map(self.pair.priceId -> -executedAmount * executedPricePerOne)
+      tpe.askBid(pair.amountId -> -executedAmount, pair.priceId -> -executedAmount * executedPricePerOne)
     }
 
-    def receive: Portfolio = receive(self.pricePerOne, self.amount)
+    def receive: Portfolio = receive(pricePerOne, amount)
     def receive(executedPricePerOne: Int, executedAmount: Int): Portfolio = Portfolio {
-      if (self.tpe == OrderType.Ask) Map(self.pair.priceId -> executedAmount * executedPricePerOne)
-      else Map(self.pair.amountId -> executedAmount)
+      tpe.askBid(pair.priceId -> executedAmount * executedPricePerOne, pair.amountId -> executedAmount)
     }
   }
 }

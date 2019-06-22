@@ -1,10 +1,12 @@
 package org.github.vsuharnikov.wavesexchange.source
 
 import alleycats.std.iterable.alleycatsStdIterableFoldable
-import cats.implicits._
+import cats.instances.either.catsStdInstancesForEither
+import cats.instances.list.catsStdInstancesForList
 import cats.syntax.apply.catsSyntaxTuple3Semigroupal
+import cats.syntax.either._
+import cats.syntax.foldable.toFoldableOps
 import cats.syntax.traverse.toTraverseOps
-import cats.{Order => _}
 import org.github.vsuharnikov.wavesexchange.domain._
 
 object Csv {
