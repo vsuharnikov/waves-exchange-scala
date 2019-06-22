@@ -14,7 +14,7 @@ object AppendSpecification extends Properties("logic.append") {
   private val clientsNumber = 1 to 3
   private val amounts = 1 to 1000
   private val prices = 1 to 10000
-  private val defaultPair = AssetPair(AssetId("A"), AssetId("B"))
+  private val defaultPair = AssetPair(AssetId('A'), AssetId('B'))
 
   private val testGen = for {
     spreadStart <- Gen.choose(prices.start, prices.end - 1)
@@ -68,7 +68,7 @@ object AppendSpecification extends Properties("logic.append") {
 
   property("submitter receives >= expected") = forAll(overlappingGen) {
     case (origOb, order) =>
-      val (_, updatedPortfolio) = append(origOb, order)
+      val (updatedPortfolio, _) = append(origOb, order)
 
       val toCheck = order.receive.p.zipMap(updatedPortfolio.p(order.client).p)
       val toCheckStr = toCheck
@@ -88,7 +88,7 @@ object AppendSpecification extends Properties("logic.append") {
   property("assets invariant") = forAll(testGen) {
     case (origOb, order) =>
       val origPort = Group[ClientsPortfolio].inverse(origOb.clientsPortfolio |+| order.clientSpend)
-      val (updatedOb, updatedPort) = append(origOb, order, origPort)
+      val (updatedPort, updatedOb) = append(origOb, order, origPort)
 
       val assetsBefore = countAssets(origPort, origOb)
       val assetsAfter = countAssets(updatedPort, updatedOb)

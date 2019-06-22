@@ -13,8 +13,18 @@ import scala.collection.immutable.{Queue, TreeMap}
 
 // For simplicity there is one file for simple models
 package object domain {
-  private val strShow: Show[String] = x => x
   private implicit val intShow: Show[Int] = _.toString
+
+  private val charShow: Show[Char] = _.toString
+  private val charFormat: Format[Char] = Format(
+    {
+      case JsString(x) if x.length == 1 => JsSuccess(x.head)
+      case x                            => JsError(s"Can't read '$x' as char")
+    },
+    x => JsString(x.toString)
+  )
+
+  private val strShow: Show[String] = x => x
   private val strFormat: Format[String] = Format(
     {
       case JsString(x) => JsSuccess(x)
@@ -23,13 +33,13 @@ package object domain {
     JsString(_)
   )
 
-  @newtype case class AssetId(id: String)
+  @newtype case class AssetId(id: Char)
   object AssetId {
-    implicit val show: Show[AssetId] = strShow.coerce
-    implicit val json: Format[AssetId] = strFormat.coerce
+    implicit val show: Show[AssetId] = charShow.coerce
+    implicit val json: Format[AssetId] = charFormat.coerce
   }
 
-  val Dollar = AssetId("$")
+  val Dollar = AssetId('$')
 
   case class AssetPair(amountId: AssetId, priceId: AssetId)
   object AssetPair {
@@ -43,6 +53,7 @@ package object domain {
   type AssetPrice = Int
   type AssetAmount = Int
 
+  // newtype, so we don't need to import instances for Map everywhere
   @newtype case class Portfolio(p: Map[AssetId, AssetAmount])
   object Portfolio {
     implicit val group: Group[Portfolio] = new Group[Portfolio] {
@@ -63,6 +74,7 @@ package object domain {
 
   @newtype case class ClientsPortfolio(p: Map[ClientId, Portfolio]) {
     def values: Iterable[Portfolio] = p.values
+    def apply(id: ClientId): Portfolio = p.getOrElse(id, Monoid[Portfolio].empty)
   }
   object ClientsPortfolio {
     implicit val group: Group[ClientsPortfolio] = new Group[ClientsPortfolio] {

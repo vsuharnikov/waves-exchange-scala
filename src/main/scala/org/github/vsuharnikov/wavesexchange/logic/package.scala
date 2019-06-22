@@ -22,19 +22,19 @@ package object logic {
 
   @tailrec def append(orderBook: OrderBook,
                       submitted: Order,
-                      balances: ClientsPortfolio = Monoid[ClientsPortfolio].empty): (OrderBook, ClientsPortfolio) =
+                      balances: ClientsPortfolio = Monoid[ClientsPortfolio].empty): (ClientsPortfolio, OrderBook) =
     orderBook.best(submitted.tpe.opposite) match {
       case Some(counter) if overlaps(counter, submitted) =>
         val restCounterAmount = counter.amount - submitted.amount
         val updatedBalances = balances |+| execute(counter, submitted)
 
-        if (restCounterAmount == 0) (orderBook.removeBest(counter.tpe), updatedBalances)
+        if (restCounterAmount == 0) (updatedBalances, orderBook.removeBest(counter.tpe))
         else if (restCounterAmount > 0)
-          (orderBook.replaceBestBy(counter.copy(amount = restCounterAmount)), updatedBalances)
+          (updatedBalances, orderBook.replaceBestBy(counter.copy(amount = restCounterAmount)))
         else
           append(orderBook.removeBest(counter.tpe), submitted.copy(amount = -restCounterAmount), updatedBalances)
 
-      case _ => (orderBook.append(submitted), balances |+| submitted.clientSpend)
+      case _ => (balances |+| submitted.clientSpend, orderBook.append(submitted))
     }
 
   private def execute(counter: Order, submitted: Order): ClientsPortfolio = {

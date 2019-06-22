@@ -10,54 +10,59 @@ import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 
 import scala.io.Source
+import scala.reflect.ClassTag
 
 object MainApp {
   def main(args: Array[String]): Unit = {
-    val baseDir = args.headOption.getOrElse(
-      throw new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
+    val baseDir =
+      args.headOption.getOrElse(throw new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
 
-    val assets = Dollar :: ('A' to 'D').map(x => AssetId(x.toString)).toList
+    // https://github.com/estatico/scala-newtype/issues/10
+    val assets =
+      List('$', 'A', 'B', 'C', 'D').map(AssetId(_)).toArray(implicitly[ClassTag[Char]].asInstanceOf[ClassTag[AssetId]])
 
     val clientsFile = Source.fromFile(new File(s"$baseDir/clients.txt"))
     val ordersFile = Source.fromFile(new File(s"$baseDir/orders.txt"))
 
-    val input = for {
-      clients <- Csv.clients(clientsFile.getLines().toList, assets)
-      orders <- Csv.orders(ordersFile.getLines().toList)
-    } yield (clients, orders)
+    try {
+      Csv.clients(clientsFile.getLines().toIterable, assets) match {
+        case Left(e) => System.err.println(e)
+        case Right(clients) =>
+          val orders = ordersFile.getLines().toIterable.map(Csv.order).collect { case Right(x) => x }
+          val (finalPort, finalObs) = mainLoop(clients, orders)
 
-    input match {
-      case Left(e) => System.err.println(e)
-      case Right((clients, orders)) =>
-        val (finalObs, finalPort) =
-          orders.zipWithIndex.foldLeft((Map.empty[AssetPair, OrderBook], clients)) {
-            case (curr @ (currObs, origAllPort), (order, i)) =>
-              val clientPort = origAllPort.p.getOrElse(order.client, Monoid.empty[Portfolio])
-              validate(order, clientPort) match {
-                case Left(e) =>
-                  System.err.println(s"[$i] Can't apply $order: $e")
-                  curr
+          val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(finalObs.values.map(_.clientsPortfolio)))
+          val finalClients = finalPort |+| obPortfolio
+          val assetsAfter = Monoid.combineAll(finalClients.values)
 
-                case Right(_) =>
-                  val ob = currObs.getOrElse(order.pair, OrderBook.empty)
-                  val (updatedOb, updatedAllPort) = append(ob, order, origAllPort)
-                  (currObs.updated(order.pair, updatedOb), updatedAllPort)
-              }
-          }
-
-        val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(finalObs.values.map(_.clientsPortfolio)))
-        val finalClients = finalPort |+| obPortfolio
-        val assetsAfter = Monoid.combineAll(finalClients.values)
-
-        println(show"""Assets before:
-                      |${countAssets(clients, OrderBook.empty)}
-                      |Assets after:
-                      |$assetsAfter
-                      |Clients portfolio before:
-                      |$clients
-                      |Clients portfolio after:
-                      |$finalClients"""".stripMargin)
-        println(s"Final order books:\n${finalObs.mkString("\n")}")
+          println(show"""Assets before:
+                        |${countAssets(clients, OrderBook.empty)}
+                        |Assets after:
+                        |$assetsAfter
+                        |Clients portfolio before:
+                        |$clients
+                        |Clients portfolio after:
+                        |$finalClients""".stripMargin)
+          println(s"Final order books:\n${finalObs.mkString("\n")}")
+      }
+    } finally {
+      clientsFile.close()
+      ordersFile.close()
     }
   }
+
+  def mainLoop(clients: ClientsPortfolio, orders: Iterable[Order]): (ClientsPortfolio, Map[AssetPair, OrderBook]) =
+    orders.zipWithIndex.foldLeft((clients, Map.empty[AssetPair, OrderBook])) {
+      case (curr @ (origAllPort, currObs), (order, i)) =>
+        validate(order, origAllPort(order.client)) match {
+          case Left(e) =>
+            System.err.println(s"[$i] Can't apply $order: $e")
+            curr
+
+          case Right(_) =>
+            val ob = currObs.getOrElse(order.pair, OrderBook.empty)
+            val (updatedAllPort, updatedOb) = append(ob, order, origAllPort)
+            (updatedAllPort, currObs.updated(order.pair, updatedOb))
+        }
+    }
 }
