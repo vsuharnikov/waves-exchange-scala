@@ -8,6 +8,7 @@ import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.console._
 import zio.nio.file.{Files, Path}
+import zio.stm.TQueue
 import zio.{App, Task, ZIO}
 
 import scala.collection.immutable.Queue
@@ -26,32 +27,37 @@ object MainApp extends App {
     if (args.isEmpty) Task.fail(new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
     else Task(Arguments(Path(args.head)))
 
+  type OrderBookQueues = Map[AssetPair, TQueue[Order]]
+
   private def logic(args: Arguments) =
     for {
-      clients <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
+      initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
         ZIO.fromEither(Csv.clients(xs, assets)).absorbWith(new ParseException(_))
       }
+      // todo stream
       orders <- Files.readAllLines(args.outputDir / "orders.txt").map { xs =>
         xs.map(Csv.order).collect {
           case Right(x) => x
         }
       }
+      process <- ()
+      _ <- ZIO.foreach(orders)()
       _ <- {
-        val (finalPort, finalObs, invalidOrders) = mainLoop(clients, orders)
+        val (updatedClientsPortfolio, finalObs, invalidOrders) = mainLoop(initialClientsPortfolio, orders)
 
         val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(finalObs.values.map(_.clientsPortfolio)))
-        val finalClients = finalPort |+| obPortfolio
-        val assetsAfter = Monoid.combineAll(finalClients.values)
+        val finalClientsPortfolio = updatedClientsPortfolio |+| obPortfolio
+        val assetsAfter = Monoid.combineAll(finalClientsPortfolio.values)
 
         putStrLn(
           show"""Assets before:
-              |${countAssets(clients, OrderBook.empty)}
+              |${countAssets(initialClientsPortfolio, OrderBook.empty)}
               |Assets after:
               |$assetsAfter
               |Clients portfolio before:
-              |$clients
+              |$initialClientsPortfolio
               |Clients portfolio after:
-              |$finalClients""".stripMargin
+              |$finalClientsPortfolio""".stripMargin
         ) *>
           putStrLn(s"Final order books:\n${finalObs.mkString("\n")}") *>
           putStrLn(s"Invalid orders:\n${invalidOrders
