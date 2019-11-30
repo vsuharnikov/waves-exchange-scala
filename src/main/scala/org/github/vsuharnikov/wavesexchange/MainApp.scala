@@ -44,7 +44,7 @@ object MainApp extends App {
       portfolios <- STM.atomically(TRef.make(initialClientsPortfolio))
       currObs <- STM.atomically(TRef.make(Map.empty[AssetPair, OrderBook]))
       _ <- {
-        ZIO.foreach(orders) { order =>
+        ZIO.foreachPar(orders) { order =>
           (for {
             x <- portfolios.get
             _ <- validate(order, x(order.client)) match {
