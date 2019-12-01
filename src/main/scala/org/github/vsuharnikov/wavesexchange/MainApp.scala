@@ -4,6 +4,7 @@ import cats.kernel.{Group, Monoid}
 import cats.syntax.semigroup.catsSyntaxSemigroup
 import cats.syntax.show.showInterpolator
 import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientsPortfolio, Order, OrderBook}
+import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.console._
@@ -27,24 +28,24 @@ object MainApp extends App {
       initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
         ZIO.fromEither(Csv.clients(xs, assets)).absorbWith(new ParseException(_))
       }
-      // todo stream
-      orders <- Files.readAllLines(args.outputDir / "orders.txt").map { xs =>
-        xs.map(Csv.order).collect { case Right(x) => x }
-      }
       portfoliosRef <- STM.atomically(TRef.make(initialClientsPortfolio))
       currObsRef <- STM.atomically(TRef.make(Map.empty[AssetPair, OrderBook]))
-      _ <- ZIO.foreach(orders) { order =>
-        portfoliosRef.get.flatMap { portfolios =>
-          validate(order, portfolios(order.client)).fold(
-            _ => STM.unit,
-            _ =>
-              currObsRef.get.flatMap { currObs =>
-                val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
-                portfoliosRef.set(updatedAllPort) *> currObsRef.set(currObs.updated(order.pair, updatedOb))
-            }
-          )
-        }.commit
-      }
+      _ <- Files
+        .lines((args.outputDir / "orders.txt").toFile)
+        .map(Csv.order)
+        .collect { case Right(x) => x }
+        .foreach { order =>
+          portfoliosRef.get.flatMap { portfolios =>
+            validate(order, portfolios(order.client)).fold(
+              _ => STM.unit,
+              _ =>
+                currObsRef.get.flatMap { currObs =>
+                  val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
+                  portfoliosRef.set(updatedAllPort) *> currObsRef.set(currObs.updated(order.pair, updatedOb))
+              }
+            )
+          }.commit
+        }
       _ <- portfoliosRef.get.zip(currObsRef.get).commit.flatMap(Function.tupled(printResults(initialClientsPortfolio, _, _)))
     } yield ()
 
