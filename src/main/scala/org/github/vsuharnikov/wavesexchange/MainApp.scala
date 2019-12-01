@@ -9,7 +9,7 @@ import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.console._
 import zio.nio.file.{Files, Path}
-import zio.stm.{STM, TMap, TRef}
+import zio.stm.{STM, TRef}
 import zio.{App, Task, ZIO}
 
 import scala.reflect.ClassTag
@@ -21,8 +21,6 @@ object MainApp extends App {
     if (args.isEmpty) Task.fail(new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
     else Task(Arguments(Path(args.head)))
 
-  type OrderBookQueues = TMap[AssetPair, Order]
-
   private def logic(args: Arguments) =
     for {
       initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
@@ -30,26 +28,28 @@ object MainApp extends App {
       }
       portfoliosRef <- STM.atomically(TRef.make(initialClientsPortfolio))
       currObsRef <- STM.atomically(TRef.make(Map.empty[AssetPair, OrderBook]))
-      _ <- Files
-        .lines((args.outputDir / "orders.txt").toFile)
-        .map(Csv.order)
-        .collect { case Right(x) => x }
-        .groupByKey(_.pair)
-        .apply { (_, pairOrders) =>
-          pairOrders.mapM(process(portfoliosRef, currObsRef)).drain
-        }
-        .runDrain
+      _ <- {
+        val process = processOrder(portfoliosRef, currObsRef)(_)
+        Files
+          .lines((args.outputDir / "orders.txt").toFile)
+          .map(Csv.order)
+          .collect { case Right(x) => x }
+          .groupByKey(_.pair) { (_, pairOrders) =>
+            pairOrders.mapM(process).drain
+          }
+          .runDrain
+      }
       _ <- portfoliosRef.get.zip(currObsRef.get).commit.flatMap(Function.tupled(printResults(initialClientsPortfolio, _, _)))
     } yield ()
 
-  private def process(portfoliosRef: TRef[ClientsPortfolio], currObsRef: TRef[Map[AssetPair, OrderBook]])(order: Order) =
+  private def processOrder(portfoliosRef: TRef[ClientsPortfolio], currObsRef: TRef[Map[AssetPair, OrderBook]])(order: Order) =
     portfoliosRef.get.flatMap { portfolios =>
       validate(order, portfolios(order.client)).fold(
         _ => STM.unit,
         _ =>
           currObsRef.get.flatMap { currObs =>
             val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
-            portfoliosRef.set(updatedAllPort) *> currObsRef.set(currObs.updated(order.pair, updatedOb))
+            portfoliosRef.set(updatedAllPort) <*> currObsRef.set(currObs.updated(order.pair, updatedOb))
         }
       )
     }.commit
