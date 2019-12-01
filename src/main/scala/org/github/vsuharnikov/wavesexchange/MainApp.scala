@@ -34,20 +34,25 @@ object MainApp extends App {
         .lines((args.outputDir / "orders.txt").toFile)
         .map(Csv.order)
         .collect { case Right(x) => x }
-        .foreach { order =>
-          portfoliosRef.get.flatMap { portfolios =>
-            validate(order, portfolios(order.client)).fold(
-              _ => STM.unit,
-              _ =>
-                currObsRef.get.flatMap { currObs =>
-                  val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
-                  portfoliosRef.set(updatedAllPort) *> currObsRef.set(currObs.updated(order.pair, updatedOb))
-              }
-            )
-          }.commit
+        .groupByKey(_.pair)
+        .apply { (_, pairOrders) =>
+          pairOrders.mapM(process(portfoliosRef, currObsRef)).drain
         }
+        .runDrain
       _ <- portfoliosRef.get.zip(currObsRef.get).commit.flatMap(Function.tupled(printResults(initialClientsPortfolio, _, _)))
     } yield ()
+
+  private def process(portfoliosRef: TRef[ClientsPortfolio], currObsRef: TRef[Map[AssetPair, OrderBook]])(order: Order) =
+    portfoliosRef.get.flatMap { portfolios =>
+      validate(order, portfolios(order.client)).fold(
+        _ => STM.unit,
+        _ =>
+          currObsRef.get.flatMap { currObs =>
+            val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
+            portfoliosRef.set(updatedAllPort) *> currObsRef.set(currObs.updated(order.pair, updatedOb))
+        }
+      )
+    }.commit
 
   private case class Arguments(outputDir: Path)
 
