@@ -1,11 +1,11 @@
 package org.github.vsuharnikov.wavesexchange
 
+import _root_.io.estatico.newtype.macros.newtype
+import _root_.io.estatico.newtype.ops._
 import cats.instances.int.catsKernelStdGroupForInt
 import cats.instances.map.catsKernelStdMonoidForMap
 import cats.syntax.show.showInterpolator
 import cats.{Group, Monoid, Show}
-import io.estatico.newtype.macros.newtype
-import io.estatico.newtype.ops._
 import org.github.vsuharnikov.wavesexchange.collections.groupForMap
 
 import scala.collection.immutable.{Queue, TreeMap}
