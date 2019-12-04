@@ -2,8 +2,8 @@ package org.github.vsuharnikov.wavesexchange.domain
 
 import cats.Show
 
-case class Order(client: ClientId, tpe: OrderType, pair: AssetPair, pricePerOne: AssetPrice, amount: AssetAmount) {
-  override def toString: String = s"Order($client, $tpe, $pair, ppo=$pricePerOne, a=$amount)"
+case class Order(id: OrderId, client: ClientId, tpe: OrderType, pair: AssetPair, pricePerOne: AssetPrice, amount: AssetAmount) {
+  override def toString: String = s"Order($id, $client, $tpe, $pair, ppo=$pricePerOne, a=$amount)"
 }
 
 object Order {

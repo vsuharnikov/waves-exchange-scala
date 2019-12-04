@@ -8,6 +8,11 @@ import org.github.vsuharnikov.wavesexchange.domain._
 import scala.annotation.tailrec
 
 package object logic {
+  sealed trait OrderEvent
+  object OrderEvent {
+    case class Added(order: Order)
+  }
+
   def validate(order: Order, balance: Portfolio): Either[String, Order] = {
     val finalBalance = balance |+| order.spend
     val negativeAmount = finalBalance.p.filter { case (_, amount) => amount < 0 }.zipMap(balance.p)

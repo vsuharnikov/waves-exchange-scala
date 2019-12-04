@@ -3,13 +3,16 @@ package org.github.vsuharnikov.wavesexchange
 import cats.kernel.{Group, Monoid}
 import cats.syntax.semigroup.catsSyntaxSemigroup
 import cats.syntax.show.showInterpolator
-import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientsPortfolio, Order, OrderBook}
+import cats.syntax.group.catsSyntaxGroup
+import org.github.vsuharnikov.wavesexchange.collections.groupForMap
+import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId, ClientsPortfolio, Order, OrderBook, Portfolio}
 import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.console._
 import zio.nio.file.{Files, Path}
-import zio.stm.{STM, TRef}
+import zio.stm.{STM, TMap, TQueue, TRef}
+import zio.stream.ZStream
 import zio.{App, Task, ZIO}
 
 import scala.reflect.ClassTag
@@ -28,19 +31,41 @@ object MainApp extends App {
       }
       portfoliosRef <- STM.atomically(TRef.make(initialClientsPortfolio))
       currObsRef <- STM.atomically(TRef.make(Map.empty[AssetPair, OrderBook]))
+      consumerQueue <- STM.atomically(TQueue.make[Order](10000))
+      // consumer
       _ <- {
-        val process = processOrder(portfoliosRef, currObsRef)(_)
+        ZStream
+          .fromEffect(consumerQueue.take.commit) // takeUpTo
+          .groupByKey(_.pair) { (_, pairOrders) =>
+            pairOrders.mapM(validateAndReserve).drain
+          }
+      }
+      // producer
+      _ <- {
+        val validateAndReserve = validateAndReserveOrder(portfoliosRef, currObsRef, consumerQueue)(_)
         Files
           .lines((args.outputDir / "orders.txt").toFile)
           .map(Csv.order)
           .collect { case Right(x) => x }
           .groupByKey(_.pair) { (_, pairOrders) =>
-            pairOrders.mapM(process).drain
+            pairOrders.mapM(validateAndReserve).drain
           }
           .runDrain
+          .fork
       }
       _ <- portfoliosRef.get.zip(currObsRef.get).commit.flatMap(Function.tupled(printResults(initialClientsPortfolio, _, _)))
     } yield ()
+
+  private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Order])(order: Order) =
+    (
+      for {
+        available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+        reserved <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+        _ <- STM.fromEither(validate(order, available |-| reserved))
+        _ <- sink.offer(order)
+        _ <- reservedRef.put(order.client, reserved |+| order.spend)
+      } yield ()
+    ).commit
 
   private def processOrder(portfoliosRef: TRef[ClientsPortfolio], currObsRef: TRef[Map[AssetPair, OrderBook]])(order: Order) =
     portfoliosRef.get.flatMap { portfolios =>

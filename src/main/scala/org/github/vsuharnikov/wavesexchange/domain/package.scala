@@ -48,6 +48,11 @@ package object domain {
     implicit val show: Show[ClientId] = strShow.coerce
   }
 
+  @newtype case class OrderId(id: Int)
+  object OrderId {
+    implicit val show: Show[OrderId] = strShow.coerce
+  }
+
   @newtype case class ClientsPortfolio(p: Map[ClientId, Portfolio]) {
     def values: Iterable[Portfolio] = p.values
     def apply(id: ClientId): Portfolio = p.getOrElse(id, Monoid[Portfolio].empty)
@@ -56,6 +61,10 @@ package object domain {
     implicit val group: Group[ClientsPortfolio] = groupForMap[ClientId, Portfolio].coerce
     implicit val show: Show[ClientsPortfolio] = _.p.toVector.sortBy(_._1.id).map { case (clientId, p) => show"$clientId: $p" }.mkString("\n")
     def apply(pair: (ClientId, Portfolio)*): ClientsPortfolio = ClientsPortfolio(Monoid.combineAll(pair.toIterable.map(Map(_))))
+  }
+
+  @newtype case class ReservedPortfolio(p: Map[OrderId, Portfolio]) {
+    def apply(id: OrderId): Portfolio = p.getOrElse(id, Monoid[Portfolio].empty)
   }
 
   import Side.Orders
