@@ -50,7 +50,7 @@ package object domain {
 
   @newtype case class OrderId(id: Int)
   object OrderId {
-    implicit val show: Show[OrderId] = strShow.coerce
+    implicit val show: Show[OrderId] = intShow.coerce
   }
 
   @newtype case class ClientsPortfolio(p: Map[ClientId, Portfolio]) {

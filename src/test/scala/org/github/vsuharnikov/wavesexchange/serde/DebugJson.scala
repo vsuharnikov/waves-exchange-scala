@@ -18,6 +18,7 @@ object DebugJson {
     strFormat.contramap(_.toString)
   )
 
+  implicit val orderId: Format[OrderId] = Format(implicitly[Reads[Int]], implicitly[Writes[Int]]).coerce[Format[OrderId]]
   implicit val assetId: Format[AssetId] = charFormat.coerce[Format[AssetId]]
   implicit val assetPair: Format[AssetPair] = Json.format[AssetPair]
 

@@ -12,8 +12,10 @@ import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.console._
 import zio.nio.file.{Files, Path}
 import zio.stm.{STM, TMap, TQueue, TRef}
+import cats.syntax.group._
 import zio.stream.ZStream
 import zio.{App, Task, ZIO}
+import zio.duration.durationInt
 
 import scala.reflect.ClassTag
 
@@ -29,23 +31,35 @@ object MainApp extends App {
       initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
         ZIO.fromEither(Csv.clients(xs, assets)).absorbWith(new ParseException(_))
       }
-      portfoliosRef <- STM.atomically(TRef.make(initialClientsPortfolio))
-      currObsRef <- STM.atomically(TRef.make(Map.empty[AssetPair, OrderBook]))
+      availableRef <- STM.atomically(TMap.fromIterable(initialClientsPortfolio))
+      reservedRef <- STM.atomically(TMap.empty[ClientId, Portfolio])
+      orderBooksRef <- STM.atomically(TMap.empty[AssetPair, OrderBook])
       consumerQueue <- STM.atomically(TQueue.make[Order](10000))
+
       // consumer
       _ <- {
-        ZStream
-          .fromEffect(consumerQueue.take.commit) // takeUpTo
-          .groupByKey(_.pair) { (_, pairOrders) =>
-            pairOrders.mapM(validateAndReserve).drain
-          }
+        val process = processOrder(reservedRef, orderBooksRef)(_)
+
+        def loop: ZIO[Any, Nothing, Nothing] =
+          ZStream
+            .fromEffect(consumerQueue.take.commit) // takeUpTo
+            .groupByKey(_.pair) { (_, pairOrders) =>
+              pairOrders.mapM(process).drain
+            }
+            .runDrain
+            .flatMap(_ => loop)
+
+        loop.fork
       }
       // producer
       _ <- {
-        val validateAndReserve = validateAndReserveOrder(portfoliosRef, currObsRef, consumerQueue)(_)
+        val validateAndReserve = validateAndReserveOrder(availableRef, reservedRef, consumerQueue)(_: Order).ignore
         Files
           .lines((args.outputDir / "orders.txt").toFile)
-          .map(Csv.order)
+          .zipWithIndex
+          .map {
+            case (line, i) => Csv.order(i, line)
+          }
           .collect { case Right(x) => x }
           .groupByKey(_.pair) { (_, pairOrders) =>
             pairOrders.mapM(validateAndReserve).drain
@@ -53,31 +67,40 @@ object MainApp extends App {
           .runDrain
           .fork
       }
-      _ <- portfoliosRef.get.zip(currObsRef.get).commit.flatMap(Function.tupled(printResults(initialClientsPortfolio, _, _)))
+      _ <- ZIO.sleep(5.seconds)
+      _ <- {
+        availableRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x)  => Monoid.combine(r, Map(x))(groupForMap) } <*>
+          reservedRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x) => Monoid.combine(r, Map(x))(groupForMap) } <*>
+          orderBooksRef.values
+      }.commit.flatMap {
+        case ((available, reserved), orderBooks) =>
+          printResults(initialClientsPortfolio, ClientsPortfolio(Monoid.combine(available, reserved)(groupForMap)), orderBooks)
+      }
     } yield ()
 
-  private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Order])(order: Order) =
-    (
-      for {
-        available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
-        reserved <- availableRef.getOrElse(order.client, Portfolio.group.empty)
-        _ <- STM.fromEither(validate(order, available |-| reserved))
-        _ <- sink.offer(order)
-        _ <- reservedRef.put(order.client, reserved |+| order.spend)
-      } yield ()
-    ).commit
+  private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Order])(
+      order: Order) = {
+    val requirements = order.spend
+    for {
+      available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+      reserved <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+      _ <- STM.fromEither(validateBalances(requirements, available |-| reserved))
+      _ <- sink.offer(order)
+      _ <- reservedRef.put(order.client, reserved |+| order.spend)
+    } yield ()
+  }.commit
 
-  private def processOrder(portfoliosRef: TRef[ClientsPortfolio], currObsRef: TRef[Map[AssetPair, OrderBook]])(order: Order) =
-    portfoliosRef.get.flatMap { portfolios =>
-      validate(order, portfolios(order.client)).fold(
-        _ => STM.unit,
-        _ =>
-          currObsRef.get.flatMap { currObs =>
-            val (updatedAllPort, updatedOb) = append(currObs.getOrElse(order.pair, OrderBook.empty), order, portfolios)
-            portfoliosRef.set(updatedAllPort) <*> currObsRef.set(currObs.updated(order.pair, updatedOb))
+  private def processOrder(reservedRef: TMap[ClientId, Portfolio], orderBooksRef: TMap[AssetPair, OrderBook])(order: Order) =
+    orderBooksRef
+      .getOrElse(order.pair, OrderBook.empty)
+      .flatMap { orderBook =>
+        val (updatedOrderBook, portfoliosDiff) = append(orderBook, order)
+        // TODO
+        orderBooksRef.put(order.pair, updatedOrderBook) <*> portfoliosDiff.foldLeft(STM.succeed(())) {
+          case (r, (clientId, p)) => (r <*> reservedRef.merge(clientId, p)(Monoid.combine)).ignore
         }
-      )
-    }.commit
+      }
+      .commit
 
   private case class Arguments(outputDir: Path)
 
@@ -86,10 +109,10 @@ object MainApp extends App {
 
   private case class InvalidOrder(index: Int, order: Order, reason: String)
 
-  private def printResults(initialClientsPortfolio: ClientsPortfolio,
+  private def printResults(initialClientsPortfolio: Map[ClientId, Portfolio],
                            updatedClientsPortfolio: ClientsPortfolio,
-                           updatedObs: Map[AssetPair, OrderBook]) = {
-    val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(updatedObs.values.map(_.clientsPortfolio)))
+                           updatedObs: List[OrderBook]) = {
+    val obPortfolio = Group[ClientsPortfolio].inverse(Monoid.combineAll(updatedObs.map(_.clientsPortfolio)))
     val finalClientsPortfolio = updatedClientsPortfolio |+| obPortfolio
     val assetsAfter = Monoid.combineAll(finalClientsPortfolio.values)
 
@@ -99,7 +122,7 @@ object MainApp extends App {
               |Assets after:
               |$assetsAfter
               |Clients portfolio before:
-              |$initialClientsPortfolio
+              |${ClientsPortfolio(initialClientsPortfolio)}
               |Clients portfolio after:
               |$finalClientsPortfolio""".stripMargin
     ) *> putStrLn(s"Final order books:\n${updatedObs.mkString("\n")}")
