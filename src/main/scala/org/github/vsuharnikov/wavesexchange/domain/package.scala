@@ -87,7 +87,7 @@ package object domain {
   }
 
   object Side {
-    type Orders = TreeMap[AssetPrice, Queue[Order]]
+    type Orders = TreeMap[AssetPrice, Queue[LimitOrder]]
 
     private val asksPriceOrder: Ordering[AssetPrice] = Ordering.apply
     private val bidsPriceOrder: Ordering[AssetPrice] = asksPriceOrder.reverse

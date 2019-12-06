@@ -2,27 +2,14 @@ package org.github.vsuharnikov.wavesexchange
 
 import cats.kernel.{Group, Monoid}
 import cats.syntax.group._
-import org.github.vsuharnikov.wavesexchange.collections._
+import org.github.vsuharnikov.wavesexchange.collections.{groupForMap, _}
 import org.github.vsuharnikov.wavesexchange.domain._
-import org.github.vsuharnikov.wavesexchange.collections.groupForMap
 
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
 
 package object logic {
   val rightUnit = Right(())
-
-  def validate(order: Order, balance: Portfolio): Either[String, Order] = {
-    val finalBalance = balance |+| order.spend
-    val negativeAmount = finalBalance.p.filter { case (_, amount) => amount < 0 }.zipMap(balance.p)
-    if (negativeAmount.isEmpty) Right(order)
-    else {
-      val stats = negativeAmount
-        .map { case (assetId, (willBe, was)) => s"$was -> $willBe $assetId" }
-        .mkString(", ")
-      Left(s"Leads to negative amounts: $stats")
-    }
-  }
 
   def validateBalances(orderRequirement: Portfolio, balance: Portfolio): Either[String, Unit] = {
     val finalBalance = balance |+| orderRequirement
@@ -36,11 +23,11 @@ package object logic {
     }
   }
 
-  @tailrec def append(orderBook: OrderBook, submitted: Order, balances: Map[ClientId, Portfolio] = Map.empty): (OrderBook, Map[ClientId, Portfolio]) =
+  @tailrec def append(orderBook: OrderBook, submitted: Order, events: Queue[OrderEvent] = Queue.empty): (OrderBook, Queue[OrderEvent]) =
     orderBook.best(submitted.tpe.opposite) match {
       case Some(counter) if overlaps(counter, submitted) =>
         val restCounterAmount = counter.amount - submitted.amount
-        val updatedBalances = Monoid.combine(balances, execute(counter, submitted))(groupForMap)
+        val updatedBalances = events.enqueue(OrderEvent.Executed(counter, submitted))
 
         if (restCounterAmount == 0) (orderBook.removeBest(counter.tpe), updatedBalances)
         else if (restCounterAmount > 0)
