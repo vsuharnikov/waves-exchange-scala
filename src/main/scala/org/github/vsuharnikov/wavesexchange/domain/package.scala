@@ -2,10 +2,10 @@ package org.github.vsuharnikov.wavesexchange
 
 import _root_.io.estatico.newtype.macros.newtype
 import _root_.io.estatico.newtype.ops._
-import cats.instances.int.catsKernelStdGroupForInt
-import cats.instances.map.catsKernelStdMonoidForMap
+import cats.instances.int.{catsKernelStdGroupForInt, catsKernelStdOrderForInt}
+import cats.instances.map.{catsKernelStdMonoidForMap, catsKernelStdEqForMap}
 import cats.syntax.show.showInterpolator
-import cats.{Group, Monoid, Show}
+import cats.{Eq, Group, Monoid, Show}
 import org.github.vsuharnikov.wavesexchange.collections.groupForMap
 
 import scala.collection.immutable.{Queue, TreeMap}
@@ -41,6 +41,8 @@ package object domain {
     // overriding toString doesn't work for newtypes
     implicit val show: Show[Portfolio] = _.p.toVector.sortBy(_._1.id).map { case (assetId, amount) => show"$amount $assetId" }.mkString(", ")
     def apply(pair: (AssetId, AssetAmount)): Portfolio = Portfolio(Map(pair))
+
+    implicit val eq: Eq[Portfolio] = catsKernelStdEqForMap[AssetId, AssetAmount].coerce
   }
 
   @newtype case class ClientId(id: String)
@@ -70,8 +72,8 @@ package object domain {
   import Side.Orders
 
   @newtype case class Side(orders: Orders) {
-    def appendOrder(x: Order): Side = Side(Side.appendOrder(orders, x))
-    def appendOrders(xs: Iterable[Order]): Side = Side(xs.foldLeft(orders)(Side.appendOrder))
+    def appendOrder(x: LimitOrder): Side = Side(Side.appendOrder(orders, x))
+    def appendOrders(xs: Iterable[LimitOrder]): Side = Side(xs.foldLeft(orders)(Side.appendOrder))
     def withoutBest: Side = Side {
       if (orders.isEmpty) orders
       else {
@@ -82,8 +84,8 @@ package object domain {
     }
 
     def isEmpty: Boolean = orders.isEmpty
-    def best: Option[Order] = orders.headOption.flatMap(_._2.headOption)
-    def allOrders: Iterable[Order] = orders.values.flatten
+    def best: Option[LimitOrder] = orders.headOption.flatMap(_._2.headOption)
+    def allOrders: Iterable[LimitOrder] = orders.values.flatten
   }
 
   object Side {
@@ -94,7 +96,7 @@ package object domain {
 
     def empty(tpe: OrderType): Side = Side(TreeMap.empty(tpe.askBid(asksPriceOrder, bidsPriceOrder)))
 
-    private def appendOrder(orders: Orders, x: Order): Orders =
-      orders.updated(x.pricePerOne, orders.getOrElse(x.pricePerOne, Queue.empty).enqueue(x))
+    private def appendOrder(orders: Orders, x: LimitOrder): Orders =
+      orders.updated(x.order.pricePerOne, orders.getOrElse(x.order.pricePerOne, Queue.empty).enqueue(x))
   }
 }

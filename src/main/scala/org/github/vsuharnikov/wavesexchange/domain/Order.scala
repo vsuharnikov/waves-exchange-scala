@@ -16,7 +16,7 @@ object Order {
 
     def spend: Portfolio = spend(pricePerOne, amount)
     def spend(executedPricePerOne: Int, executedAmount: Int): Portfolio = Portfolio {
-      tpe.askBid(pair.amountId -> -executedAmount, pair.priceId -> -executedAmount * executedPricePerOne)
+      tpe.askBid(pair.amountId -> executedAmount, pair.priceId -> executedAmount * executedPricePerOne)
     }
 
     def receive: Portfolio = receive(pricePerOne, amount)

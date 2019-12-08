@@ -1,18 +1,21 @@
 package org.github.vsuharnikov.wavesexchange
 
+import cats.instances.tuple.catsKernelStdGroupForTuple2
 import cats.kernel.{Group, Monoid}
-import cats.syntax.group._
-import org.github.vsuharnikov.wavesexchange.collections.{groupForMap, _}
+import cats.syntax.group.{catsSyntaxGroup, catsSyntaxSemigroup}
+import org.github.vsuharnikov.wavesexchange.collections._
 import org.github.vsuharnikov.wavesexchange.domain._
 
 import scala.annotation.tailrec
 import scala.collection.immutable.Queue
 
 package object logic {
+  implicit val clientPorfoliosGroup = groupForMap[ClientId, Portfolio]
+
   val rightUnit = Right(())
 
-  def validateBalances(orderRequirement: Portfolio, balance: Portfolio): Either[String, Unit] = {
-    val finalBalance = balance |+| orderRequirement
+  def validateBalances(balance: Portfolio, orderRequirement: Portfolio): Either[String, Unit] = {
+    val finalBalance = balance |-| orderRequirement
     val negativeAmount = finalBalance.p.filter { case (_, amount) => amount < 0 }.zipMap(balance.p)
     if (negativeAmount.isEmpty) rightUnit
     else {
@@ -23,30 +26,55 @@ package object logic {
     }
   }
 
-  @tailrec def append(orderBook: OrderBook, submitted: Order, events: Queue[OrderEvent] = Queue.empty): (OrderBook, Queue[OrderEvent]) =
-    orderBook.best(submitted.tpe.opposite) match {
-      case Some(counter) if overlaps(counter, submitted) =>
-        val restCounterAmount = counter.amount - submitted.amount
-        val updatedBalances = events.enqueue(OrderEvent.Executed(counter, submitted))
+  def append(orderBook: OrderBook, submitted: LimitOrder): (OrderBook, Queue[OrderEvent]) =
+    append(orderBook, submitted, Queue(OrderEvent.New(submitted)))
 
-        if (restCounterAmount == 0) (orderBook.removeBest(counter.tpe), updatedBalances)
-        else if (restCounterAmount > 0)
-          (orderBook.replaceBestBy(counter.copy(amount = restCounterAmount)), updatedBalances)
-        else
-          append(orderBook.removeBest(counter.tpe), submitted.copy(amount = -restCounterAmount), updatedBalances)
+  @tailrec private def append(orderBook: OrderBook, submitted: LimitOrder, events: Queue[OrderEvent]): (OrderBook, Queue[OrderEvent]) =
+    orderBook.best(submitted.order.tpe.opposite) match {
+      case Some(counter) if overlaps(counter.order, submitted.order) =>
+        val updatedRestCounterAmount = counter.restAmount - submitted.restAmount
+        val updatedEvents = events.enqueue(OrderEvent.Executed(counter, submitted))
 
-      case _ => (orderBook.append(submitted), Monoid.combine(balances, submitted.clientSpend.p)(groupForMap[ClientId, Portfolio]))
+        if (updatedRestCounterAmount == 0) (orderBook.removeBest(counter.order.tpe), updatedEvents)
+        else if (updatedRestCounterAmount > 0) (orderBook.replaceBestBy(counter.copy(restAmount = updatedRestCounterAmount)), updatedEvents)
+        else append(orderBook.removeBest(counter.order.tpe), submitted.copy(restAmount = -updatedRestCounterAmount), updatedEvents)
+
+      case _ => (orderBook.append(submitted), events.enqueue(OrderEvent.Placed(submitted)))
     }
 
-  private def execute(counter: Order, submitted: Order): Map[ClientId, Portfolio] = {
-    val executedPricePerOne = counter.pricePerOne
-    val executedAmount = Math.min(counter.amount, submitted.amount)
-    val counterReceive = counter.receive(executedPricePerOne, executedAmount)
-    val submittedReceive = submitted.receive(executedPricePerOne, executedAmount)
-    Map(
-      counter.client -> counterReceive,
-      submitted.client -> submittedReceive.remove(counterReceive),
+  def foldEvents(events: Queue[OrderEvent],
+                 aDiff: Map[ClientId, Portfolio] = Map.empty,
+                 rDiff: Map[ClientId, Portfolio] = Map.empty): (Map[ClientId, Portfolio], Map[ClientId, Portfolio]) =
+    events.foldLeft((aDiff, rDiff)) {
+      case (r, evt) =>
+        evt match {
+          case OrderEvent.Executed(maker, taker) => r |+| execute(maker, taker)
+          case _                                 => r
+        }
+    }
+
+  def execute(counter: LimitOrder, submitted: LimitOrder): (Map[ClientId, Portfolio], Map[ClientId, Portfolio]) = {
+    // TODO same orders?
+    // TODO wrong price?
+
+    val executedPricePerOne = counter.order.pricePerOne
+    val executedAmount = Math.min(counter.restAmount, submitted.restAmount)
+    val counterReceive = counter.order.receive(executedPricePerOne, executedAmount)
+    val submittedReceive = submitted.order.receive(executedPricePerOne, executedAmount)
+
+    val counterDiff = counterReceive |-| submittedReceive
+
+    val aDiff = Map(
+      counter.order.client -> counterDiff,
+      submitted.order.client -> Group.inverse(counterDiff)
     )
+
+    val rDiff = Group.inverse(
+      Map(counter.order.client -> counter.copy(restAmount = executedAmount).spend) |+|
+        Map(submitted.order.client -> submitted.copy(restAmount = executedAmount).spend)
+    )
+
+    (aDiff, rDiff)
   }
 
   private def overlaps(counter: Order, submitted: Order): Boolean =

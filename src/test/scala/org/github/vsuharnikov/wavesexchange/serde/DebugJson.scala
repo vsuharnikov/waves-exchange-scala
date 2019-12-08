@@ -38,12 +38,13 @@ object DebugJson {
   )
 
   implicit val orderJson: Format[Order] = Json.format[Order]
+  implicit val limitOrderJson: Format[LimitOrder] = Json.format[LimitOrder]
   implicit val orderBookJson: Format[OrderBook] = Format[OrderBook](
     {
       case JsObject(obj) =>
         val r = for {
-          asks <- obj.get("a").map(_.as[List[Order]])
-          bids <- obj.get("b").map(_.as[List[Order]])
+          asks <- obj.get("a").map(_.as[List[LimitOrder]])
+          bids <- obj.get("b").map(_.as[List[LimitOrder]])
         } yield OrderBook(asks, bids)
 
         r.fold[JsResult[OrderBook]](JsError(s"Can't parse as OrderBook: JsObject($obj)"))(JsSuccess(_))
