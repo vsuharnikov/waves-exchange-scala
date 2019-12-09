@@ -5,7 +5,7 @@ import cats.syntax.group.catsSyntaxGroup
 import cats.syntax.semigroup.catsSyntaxSemigroup
 import cats.syntax.show.showInterpolator
 import org.github.vsuharnikov.wavesexchange.collections.groupForMap
-import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId, ClientsPortfolio, LimitOrder, Order, OrderBook, Portfolio}
+import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId, ClientsPortfolio, Dollar, LimitOrder, Order, OrderBook, Portfolio}
 import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
@@ -70,13 +70,28 @@ object MainApp extends App {
         val validateAndReserve = validateAndReserveOrder(availableRef, reservedRef, consumerQueue)(_: Order).ignore
         Files
           .lines((args.outputDir / "orders.txt").toFile)
+          .take(11)
           .zipWithIndex
           .map {
             case (line, i) => Csv.order(i, line)
           }
           .collect { case Right(x) => x }
-          .groupByKey(_.pair) { (pair, pairOrders) =>
-            pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(pair)).commit)).drain
+//          .groupByKey(_.pair) { (pair, pairOrders) =>
+//            pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(pair)).commit)).drain
+//          }
+          .mapM(validateAndReserve)
+          .concat {
+            ZStream.fromEffect(
+              consumerQueue
+                .offerAll(
+                  List(
+                    AssetPair(AssetId('A'), Dollar),
+                    AssetPair(AssetId('B'), Dollar),
+                    AssetPair(AssetId('C'), Dollar),
+                    AssetPair(AssetId('D'), Dollar),
+                  ).map(Command.Stop)
+                )
+                .commit)
           }
           .runDrain
           .fork
@@ -95,14 +110,18 @@ object MainApp extends App {
   private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Command])(
       order: Order) = {
     val requirements = order.spend
-    for {
-      available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
-      reserved <- reservedRef.getOrElse(order.client, Portfolio.group.empty)
-      _ <- STM.fromEither(validateBalances(available |-| reserved, requirements))
-      _ <- sink.offer(Command.PlaceOrder(order))
-      _ <- reservedRef.put(order.client, reserved |+| requirements)
-    } yield ()
-  }.commit
+    putStrLn(s"$order").flatMap { _ =>
+      {
+        for {
+          available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+          reserved <- reservedRef.getOrElse(order.client, Portfolio.group.empty)
+          _ <- STM.fromEither(validateBalances(available |-| reserved, requirements))
+          _ <- sink.offer(Command.PlaceOrder(order))
+          _ <- reservedRef.put(order.client, reserved |+| requirements)
+        } yield ()
+      }.commit
+    }
+  }
 
   private def processOrder(availableRef: TMap[ClientId, Portfolio],
                            reservedRef: TMap[ClientId, Portfolio],
@@ -111,10 +130,10 @@ object MainApp extends App {
       .getOrElse(order.pair, OrderBook.empty)
       .flatMap { orderBook =>
         val (updatedOrderBook, events) = append(orderBook, LimitOrder(order))
-        val (portfoliosDiff, reservedDiff) = foldEvents(events)
+        val (availableDiff, reservedDiff) = foldEvents(events)
         orderBooksRef.put(order.pair, updatedOrderBook) <*>
-          portfoliosDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p)) => (r <*> availableRef.merge(clientId, p)(Monoid.combine)).ignore } <*>
-          reservedDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p))   => (r <*> reservedRef.merge(clientId, p)(Monoid.combine)).ignore }
+          availableDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p)) => (r <*> availableRef.merge(clientId, p)(Monoid.combine)).ignore } <*>
+          reservedDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p))  => (r <*> reservedRef.merge(clientId, p)(Monoid.combine)).ignore }
       }
       .commit
 
@@ -126,17 +145,15 @@ object MainApp extends App {
   private case class InvalidOrder(index: Int, order: Order, reason: String)
 
   private def printResults(initialClientsPortfolio: Map[ClientId, Portfolio],
-                           updatedClientsPortfolio: Map[ClientId, Portfolio],
+                           finalClientsPortfolio: Map[ClientId, Portfolio],
                            updatedObs: List[OrderBook]) = {
     val obPortfolio = Monoid.combineAll(updatedObs.map(_.clientsPortfolio))
-    val finalClientsPortfolio = updatedClientsPortfolio // |+| obPortfolio
-    val assetsAfter = finalClientsPortfolio
 
     putStrLn(
       show"""Assets before:
-              |${countAssets(initialClientsPortfolio, OrderBook.empty)}
+              |${countAssets(initialClientsPortfolio)}
               |Assets after:
-              |${countAssets(assetsAfter, OrderBook.empty)}
+              |${countAssets(finalClientsPortfolio)}
               |Clients portfolio before:
               |${ClientsPortfolio(initialClientsPortfolio)}
               |Clients portfolio after:

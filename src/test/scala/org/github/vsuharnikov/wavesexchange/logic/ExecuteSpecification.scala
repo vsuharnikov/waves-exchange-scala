@@ -16,15 +16,20 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
   private val prices = 1 to 10000
   private val defaultPair = AssetPair(AssetId('A'), AssetId('B'))
 
+//  private val testGen = for {
+//    spreadStart <- Gen.choose(prices.start, prices.end - 1)
+//    spreadEnd <- Gen.choose(spreadStart + 1, prices.end)
+//    spread = spreadStart to spreadEnd
+//    order1Tpe <- Gen.oneOf(OrderType.Ask, OrderType.Bid)
+//    prices1 = prices
+//    order1 <- orderGen(OrderId(1), ClientId("C1"), defaultPair, order1Tpe, prices1, amounts)
+//    prices2 = order1Tpe.askBid(order1.pricePerOne to prices1.end, prices1.start to order1.pricePerOne)
+//    order2 <- orderGen(OrderId(2), ClientId("C2"), defaultPair, order1Tpe.opposite, prices2, amounts)
+//  } yield (order1, order2)
+
   private val testGen = for {
-    spreadStart <- Gen.choose(prices.start, prices.end - 1)
-    spreadEnd <- Gen.choose(spreadStart + 1, prices.end)
-    spread = spreadStart to spreadEnd
-    order1Tpe <- Gen.oneOf(OrderType.Ask, OrderType.Bid)
-    prices1 = prices
-    order1 <- orderGen(OrderId(1), ClientId("C1"), defaultPair, order1Tpe, prices1, amounts)
-    prices2 = order1Tpe.askBid(order1.pricePerOne to prices1.end, prices1.start to order1.pricePerOne)
-    order2 <- orderGen(OrderId(2), ClientId("C2"), defaultPair, order1Tpe.opposite, prices2, amounts)
+    order1 <- Gen.const(Order(OrderId(4), ClientId("C4"), OrderType.Bid, defaultPair, 5, 4))
+    order2 <- Gen.const(Order(OrderId(10), ClientId("C4"), OrderType.Bid, defaultPair, 3, 2))
   } yield (order1, order2)
 
 //  private val overlappingGen = for {
@@ -88,8 +93,6 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
 
       s"""coins diff:
          |$coinsDiff
-         |original portfolio:
-         |$aPortDiff
          |order1
          |${toJson(order1)}
          |order2:
@@ -97,7 +100,7 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
          |active portfolio diff:
          |$aPortDiff
          |reserved portfolio diff:
-         |$rPortDiff""".stripMargin |: (coinsDiff.isEmpty && rPortDiff.values.flatMap(_.p.values).forall(_ < 0))
+         |$rPortDiff""".stripMargin |: false //(coinsDiff.isEmpty && rPortDiff.values.flatMap(_.p.values).forall(_ < 0))
   }
 
 }

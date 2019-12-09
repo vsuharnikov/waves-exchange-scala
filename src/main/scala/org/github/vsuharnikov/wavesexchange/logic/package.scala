@@ -48,6 +48,7 @@ package object logic {
     events.foldLeft((aDiff, rDiff)) {
       case (r, evt) =>
         evt match {
+          // TODO because we match with counter price, we need unreserve more! But it should work ... we have reserved diff
           case OrderEvent.Executed(maker, taker) => r |+| execute(maker, taker)
           case _                                 => r
         }
@@ -87,4 +88,6 @@ package object logic {
 
   def countAssets(allPortfolio: Map[ClientId, Portfolio], orderBook: OrderBook): Portfolio =
     Monoid.combineAll(Monoid.combine(allPortfolio, Group[ClientsPortfolio].inverse(orderBook.clientsPortfolio).p)(groupForMap).values)
+
+  def countAssets(allPortfolio: Map[ClientId, Portfolio]): Portfolio = Monoid.combineAll(allPortfolio.values)
 }
