@@ -50,6 +50,6 @@ object DebugJson {
         r.fold[JsResult[OrderBook]](JsError(s"Can't parse as OrderBook: JsObject($obj)"))(JsSuccess(_))
       case x => JsError(s"Can't parse as OrderBook: $x")
     },
-    orderBook => Json.obj("a" -> orderBook.asks.allOrders, "b" -> orderBook.asks.allOrders)
+    orderBook => Json.obj("a" -> orderBook.asks.allOrders, "b" -> orderBook.bids.allOrders)
   )
 }

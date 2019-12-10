@@ -103,7 +103,7 @@ object MainApp extends App {
           orderBooksRef.values
       }.commit.flatMap {
         case ((available, reserved), orderBooks) =>
-          printResults(initialClientsPortfolio, available /* |+| reserved*/, orderBooks)
+          printResults(initialClientsPortfolio, available, reserved, orderBooks)
       }
     } yield ()
 
@@ -146,6 +146,7 @@ object MainApp extends App {
 
   private def printResults(initialClientsPortfolio: Map[ClientId, Portfolio],
                            finalClientsPortfolio: Map[ClientId, Portfolio],
+                           reserved: Map[ClientId, Portfolio],
                            updatedObs: List[OrderBook]) = {
     val obPortfolio = Monoid.combineAll(updatedObs.map(_.clientsPortfolio))
 
@@ -157,8 +158,14 @@ object MainApp extends App {
               |Clients portfolio before:
               |${ClientsPortfolio(initialClientsPortfolio)}
               |Clients portfolio after:
-              |${ClientsPortfolio(finalClientsPortfolio)}""".stripMargin
-    ) *> putStrLn(s"Final order books:\n${updatedObs.mkString("\n")}")
+              |${ClientsPortfolio(finalClientsPortfolio)}
+              |obPortfolio:
+              |$obPortfolio""".stripMargin
+    ) *> putStrLn(s"""Final order books:
+         |${updatedObs.mkString("\n")}
+         |reserved:
+         |${reserved.mkString("\n")}
+         |""".stripMargin)
   }
 }
 
