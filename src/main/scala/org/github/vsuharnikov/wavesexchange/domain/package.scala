@@ -3,6 +3,7 @@ package org.github.vsuharnikov.wavesexchange
 import _root_.io.estatico.newtype.macros.newtype
 import _root_.io.estatico.newtype.ops._
 import cats.instances.int.{catsKernelStdGroupForInt, catsKernelStdOrderForInt}
+import cats.instances.long.{catsKernelStdGroupForLong, catsKernelStdOrderForLong}
 import cats.instances.map.{catsKernelStdMonoidForMap, catsKernelStdEqForMap}
 import cats.syntax.show.showInterpolator
 import cats.{Eq, Group, Monoid, Show}
@@ -13,6 +14,7 @@ import scala.collection.immutable.{Queue, TreeMap}
 // For simplicity there is one file for simple models
 package object domain {
   private implicit val intShow: Show[Int] = _.toString
+  private implicit val longShow: Show[Long] = _.toString
   private val charShow: Show[Char] = _.toString
   private val strShow: Show[String] = x => x
 
@@ -31,8 +33,8 @@ package object domain {
     }
   }
 
-  type AssetPrice = Int
-  type AssetAmount = Int
+  type AssetPrice = Long
+  type AssetAmount = Long
 
   // newtype, so we don't need to import instances for Map everywhere
   @newtype case class Portfolio(p: Map[AssetId, AssetAmount])

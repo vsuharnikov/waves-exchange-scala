@@ -12,9 +12,9 @@ import play.api.libs.json.Json
 import play.api.libs.json.Json.toJson
 
 object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
-  private val clientsNumber = 1 to 3
-  private val amounts = 1 to 1000
-  private val prices = 1 to 10000
+  private val clientsNumber = 1L to 3L
+  private val amounts = 1L to 1000L
+  private val prices = 1L to 10000L
   private val defaultPair = AssetPair(AssetId('A'), AssetId('B'))
 
   private val testGen = for {
@@ -44,11 +44,11 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
     }
     (newOrderPrices, amounts) = orderTpe.askBid(
       (orderBook.bids.best, orderBook.bids.worst) match {
-        case (Some(t), Some(f)) => (f.order.pricePerOne to t.order.pricePerOne, 1 to orderBook.bids.minAmount)
+        case (Some(t), Some(f)) => (f.order.pricePerOne to t.order.pricePerOne, 1L to orderBook.bids.minAmount)
         case _                  => throw new IllegalStateException("Impossibru!")
       },
       (orderBook.asks.best, orderBook.asks.worst) match {
-        case (Some(f), Some(t)) => (f.order.pricePerOne to t.order.pricePerOne, 1 to orderBook.asks.minAmount)
+        case (Some(f), Some(t)) => (f.order.pricePerOne to t.order.pricePerOne, 1L to orderBook.asks.minAmount)
         case _                  => throw new IllegalStateException("Impossibru!")
       }
     )
@@ -120,29 +120,35 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
 
     property("assets invariant") = forAll(fixedTestGen) {
       case (origOb, order) =>
-        val origPort = Group[ClientsPortfolio].inverse(origOb.clientsPortfolio |+| order.clientSpend)
+        val origPort = origOb.clientsPortfolio //|+| order.clientSpend
         val (updatedOb, events) = append(origOb, LimitOrder(order))
 
         val (aDiff, rDiff) = foldEvents(events)
-        val updatedPort = origPort.p |+| aDiff
+        val updatedPort = updatedOb.clientsPortfolio |+| ClientsPortfolio(aDiff) |-| ClientsPortfolio(rDiff) //|+| ClientsPortfolio(aDiff)
 
         val assetsBefore = countAssets(origPort.p)
-        val assetsAfter = countAssets(updatedPort)
+        val assetsAfter = countAssets(updatedPort.p)
 
-//        println(
-//          s"""aDiff:
-//             |${countAssets(aDiff)}
-//             |
-//             |rDiff:
-//             |${countAssets(rDiff)}
-//             |""".stripMargin)
+        println(
+          s"""origOb:      ${origOb.all.map(x => x.order.id -> x.clientSpend).mkString("\n")}
+             |order.spend: ${order.clientSpend}
+             |
+             |aDiff:  ${aDiff.mkString("\n")}
+             |assets: ${countAssets(aDiff)}
+             |
+             |rDiff:  ${rDiff.mkString("\n")}
+             |assets: ${countAssets(rDiff)}""".stripMargin)
 
         s"""original portfolio:
            |$origPort
+           |updated portfolio:
+           |$updatedPort
            |original order book:
            |${toJson(origOb)}
            |order:
            |${toJson(order)}
+           |events:
+           |${events.mkString("\n")}
            |assets before:
            |$assetsBefore
            |assets after:

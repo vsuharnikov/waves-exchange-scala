@@ -15,12 +15,12 @@ object Order {
     def clientSpend: ClientsPortfolio = ClientsPortfolio(client -> spend)
 
     def spend: Portfolio = spend(pricePerOne, amount)
-    def spend(executedPricePerOne: Int, executedAmount: Int): Portfolio = Portfolio {
+    def spend(executedPricePerOne: AssetPrice, executedAmount: AssetAmount): Portfolio = Portfolio {
       tpe.askBid(pair.amountId -> executedAmount, pair.priceId -> executedAmount * executedPricePerOne)
     }
 
     def receive: Portfolio = receive(pricePerOne, amount)
-    def receive(executedPricePerOne: Int, executedAmount: Int): Portfolio = Portfolio {
+    def receive(executedPricePerOne: AssetPrice, executedAmount: AssetAmount): Portfolio = Portfolio {
       tpe.askBid(pair.priceId -> executedAmount * executedPricePerOne, pair.amountId -> executedAmount)
     }
   }

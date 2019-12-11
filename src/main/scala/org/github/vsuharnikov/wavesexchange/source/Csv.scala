@@ -20,7 +20,7 @@ object Csv {
     val columns = line.split('\t')
     val expectedColumns = 1 + assets.length
     if (columns.length != expectedColumns) Left(s"Expected $expectedColumns columns, but have ${columns.length} in: $line")
-    else columns.tail.map(int).toList.sequence.map(xs => Map(ClientId(columns.head) -> toPortfolio(assets, xs)))
+    else columns.tail.map(long).toList.sequence.map(xs => Map(ClientId(columns.head) -> toPortfolio(assets, xs)))
   }
 
   private def toPortfolio(assets: Iterable[AssetId], amounts: Iterable[AssetAmount]): Portfolio =
@@ -30,7 +30,7 @@ object Csv {
     line.split('\t') match {
       case Array(clientName, rawOrderType, rawAssetId, rawPrice, rawAmount) =>
         if (rawAssetId.length == 1)
-          (operation(rawOrderType), int(rawPrice), int(rawAmount))
+          (operation(rawOrderType), long(rawPrice), long(rawAmount))
             .mapN(Order(OrderId(i), ClientId(clientName), _, AssetPair(AssetId(rawAssetId.head), Dollar), _, _))
         else Left(s"Invalid AssetId: $rawAssetId, expected one symbol")
       case xs =>
@@ -43,7 +43,7 @@ object Csv {
     case x   => Left(s"Can't parse '$x' as operation")
   }
 
-  private def int(raw: String): ParseResult[Int] =
-    try Right(raw.toInt)
+  private def long(raw: String): ParseResult[Long] =
+    try Right(raw.toLong)
     catch { case e: NumberFormatException => Left(e.getMessage) }
 }
