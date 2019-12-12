@@ -9,11 +9,12 @@ import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId
 import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
+import zio.blocking.Blocking
 import zio.console._
 import zio.nio.file.{Files, Path}
 import zio.stm.{STM, TMap, TQueue, TSemaphore}
 import zio.stream.ZStream
-import zio.{App, Task, ZIO}
+import zio.{App, Task, URIO, ZIO}
 
 import scala.reflect.ClassTag
 
@@ -28,7 +29,8 @@ object Command {
 }
 
 object MainApp extends App {
-  val orderBooksNumber = 4
+  val allAssetPairs = ('A' to 'D').toList.map(x => AssetPair(AssetId(x), Dollar))
+  val orderBooksNumber = allAssetPairs.size
 
   override def run(args: List[String]) = extractArguments(args).flatMap(logic).tapError(e => putStrLn(e.getMessage)).fold(_ => 1, _ => 0)
 
@@ -36,7 +38,8 @@ object MainApp extends App {
     if (args.isEmpty) Task.fail(new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
     else Task(Arguments(Path(args.head)))
 
-  private def logic(args: Arguments) =
+  // TODO solve IDEA issues
+  private def logic(args: Arguments): ZIO[Console with Blocking, Throwable, Unit] =
     for {
       initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
         ZIO.fromEither(Csv.clients(xs, assets)).absorbWith(new ParseException(_))
@@ -54,6 +57,7 @@ object MainApp extends App {
           case Command.Stop(pair)        => wait.release.commit
         }
 
+        // TODO: Replace by ZStream.fromPull
         def loop: ZIO[Any, Nothing, Nothing] =
           ZStream
             .fromEffect(consumerQueue.take.commit) // takeUpTo
@@ -68,33 +72,18 @@ object MainApp extends App {
       // producer
       _ <- {
         val validateAndReserve = validateAndReserveOrder(availableRef, reservedRef, consumerQueue)(_: Order).ignore
-        Files
+        val orders = Files
           .lines((args.outputDir / "orders.txt").toFile)
-          .take(11)
           .zipWithIndex
           .map {
             case (line, i) => Csv.order(i, line)
           }
           .collect { case Right(x) => x }
-//          .groupByKey(_.pair) { (pair, pairOrders) =>
-//            pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(pair)).commit)).drain
-//          }
-          .mapM(validateAndReserve)
-          .concat {
-            ZStream.fromEffect(
-              consumerQueue
-                .offerAll(
-                  List(
-                    AssetPair(AssetId('A'), Dollar),
-                    AssetPair(AssetId('B'), Dollar),
-                    AssetPair(AssetId('C'), Dollar),
-                    AssetPair(AssetId('D'), Dollar),
-                  ).map(Command.Stop)
-                )
-                .commit)
-          }
-          .runDrain
-          .fork
+
+        val validated = validatePar(orders, consumerQueue, validateAndReserve)
+//        val validated = validateSeq(orders, allAssetPairs, consumerQueue, validateAndReserve)
+
+        validated.runDrain.fork
       }
       _ <- wait.available.flatMap(x => STM.check(x >= orderBooksNumber)).commit
       _ <- {
@@ -107,21 +96,33 @@ object MainApp extends App {
       }
     } yield ()
 
+  private def validatePar(xs: ZStream[Any, Throwable, Order],
+                          consumerQueue: TQueue[Command],
+                          validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
+    xs.groupByKey(_.pair) { (pair, pairOrders) =>
+      pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(pair)).commit)).drain
+    }
+
+  private def validateSeq(xs: ZStream[Any, Throwable, Order],
+                          allPairs: List[AssetPair],
+                          consumerQueue: TQueue[Command],
+                          validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
+    xs.mapM(validateAndReserve)
+      .concat {
+        ZStream.fromEffect(consumerQueue.offerAll(allPairs.map(Command.Stop)).commit)
+      }
+
   private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Command])(
       order: Order) = {
     val requirements = order.spend
-    putStrLn(s"$order").flatMap { _ =>
-      {
-        for {
-          available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
-          reserved <- reservedRef.getOrElse(order.client, Portfolio.group.empty)
-          _ <- STM.fromEither(validateBalances(available |-| reserved, requirements))
-          _ <- sink.offer(Command.PlaceOrder(order))
-          _ <- reservedRef.put(order.client, reserved |+| requirements)
-        } yield ()
-      }.commit
-    }
-  }
+    for {
+      available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
+      reserved <- reservedRef.getOrElse(order.client, Portfolio.group.empty)
+      _ <- STM.fromEither(validateBalances(available |-| reserved, requirements))
+      _ <- sink.offer(Command.PlaceOrder(order))
+      _ <- reservedRef.put(order.client, reserved |+| requirements)
+    } yield ()
+  }.commit
 
   private def processOrder(availableRef: TMap[ClientId, Portfolio],
                            reservedRef: TMap[ClientId, Portfolio],
