@@ -65,11 +65,7 @@ package object logic {
 
     val counterDiff = counterReceive |-| submittedReceive
 
-    val aDiff = Map(
-      counter.order.client -> counterDiff,
-      submitted.order.client -> Group.inverse(counterDiff)
-    )
-
+    val aDiff = Map(counter.order.client -> counterDiff) |+| Map(submitted.order.client -> Group.inverse(counterDiff))
     val rDiff = Group.inverse(
       Map(counter.order.client -> counter.copy(restAmount = executedAmount).spend) |+|
         Map(submitted.order.client -> submitted.copy(restAmount = executedAmount).spend)

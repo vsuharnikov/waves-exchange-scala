@@ -57,11 +57,11 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
   } yield (orderBook, order)
 
   // // For test debugging purposes
-    private val fixedTestGen = {
+  private val fixedTestGen = {
 //      val rawOrderBook =
 //        """{"a":[{"order":{"id":1,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":328761,"amount":546},"restAmount":546},{"order":{"id":4,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":994980,"amount":379},"restAmount":379},{"order":{"id":3,"client":"3","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":6469780,"amount":96},"restAmount":96},{"order":{"id":5,"client":"2","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":8766742,"amount":532},"restAmount":532},{"order":{"id":2,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":22767868,"amount":10},"restAmount":10}],"b":[{"order":{"id":1,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":328761,"amount":546},"restAmount":546},{"order":{"id":4,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":994980,"amount":379},"restAmount":379},{"order":{"id":3,"client":"3","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":6469780,"amount":96},"restAmount":96},{"order":{"id":5,"client":"2","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":8766742,"amount":532},"restAmount":532},{"order":{"id":2,"client":"1","tpe":"Ask","pair":{"amountId":"A","priceId":"B"},"pricePerOne":22767868,"amount":10},"restAmount":10}]}""".stripMargin
-      val rawOrderBook =
-        """{
+    val rawOrderBook =
+      """{
           |  "a": [
           |    {
           |      "order": {
@@ -80,8 +80,8 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
           |  ],
           |  "b": []
           |}""".stripMargin
-      val rawOrder =
-        """{
+    val rawOrder =
+      """{
           |  "id": 2147483647,
           |  "client": "2",
           |  "tpe": "Bid",
@@ -93,11 +93,11 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
           |  "amount": 300
           |}""".stripMargin
 
-      for {
-        orderBook <- Gen.const[OrderBook](Json.parse(rawOrderBook).as[OrderBook])
-        order <- Gen.const[Order](Json.parse(rawOrder).as[Order])
-      } yield (orderBook, order)
-    }
+    for {
+      orderBook <- Gen.const[OrderBook](Json.parse(rawOrderBook).as[OrderBook])
+      order <- Gen.const[Order](Json.parse(rawOrder).as[Order])
+    } yield (orderBook, order)
+  }
 
 //  property("submitter receives >= expected") = forAll(overlappingGen) {
 //    case (origOb, order) =>
@@ -118,42 +118,53 @@ object ExecuteSpecification extends Properties("logic.execute") with DomainGen {
 //         |$toCheckStr""".stripMargin |: prop
 //  }
 
-    property("assets invariant") = forAll(fixedTestGen) {
-      case (origOb, order) =>
-        val origPort = origOb.clientsPortfolio //|+| order.clientSpend
-        val (updatedOb, events) = append(origOb, LimitOrder(order))
+  property("assets invariant") = forAll(fixedTestGen) {
+    case (obOrig, order) =>
+      val aOrig = obOrig.clientsPortfolio |+| order.clientSpend
+      val rOrig = obOrig.clientsPortfolio
 
-        val (aDiff, rDiff) = foldEvents(events)
-        val updatedPort = updatedOb.clientsPortfolio |+| ClientsPortfolio(aDiff) |-| ClientsPortfolio(rDiff) //|+| ClientsPortfolio(aDiff)
+      val (obUpdated, events) = append(obOrig, LimitOrder(order))
+      val (aDiff, rDiff) = foldEvents(events)
 
-        val assetsBefore = countAssets(origPort.p)
-        val assetsAfter = countAssets(updatedPort.p)
+      val aUpdated = aOrig |+| ClientsPortfolio(aDiff)
+      val rUpdated = rOrig |+| ClientsPortfolio(rDiff)
 
-        println(
-          s"""origOb:      ${origOb.all.map(x => x.order.id -> x.clientSpend).mkString("\n")}
-             |order.spend: ${order.clientSpend}
-             |
-             |aDiff:  ${aDiff.mkString("\n")}
-             |assets: ${countAssets(aDiff)}
-             |
-             |rDiff:  ${rDiff.mkString("\n")}
-             |assets: ${countAssets(rDiff)}""".stripMargin)
+      val assetsBefore = countAssets(aOrig.p)
+      val assetsAfter = countAssets(aUpdated.p)
 
-        s"""original portfolio:
-           |$origPort
-           |updated portfolio:
-           |$updatedPort
-           |original order book:
-           |${toJson(origOb)}
-           |order:
-           |${toJson(order)}
-           |events:
-           |${events.mkString("\n")}
-           |assets before:
-           |$assetsBefore
-           |assets after:
-           |$assetsAfter""".stripMargin |: assetsBefore.p.toSet == assetsAfter.p.toSet
-    }
+      val eventsDiffs = events.flatMap {
+        case evt @ OrderEvent.Executed(maker, taker) => Some(evt -> execute(maker, taker))
+        case _                                       => None
+      }
+
+      s"""|assets before:
+          |$assetsBefore
+          |assets after:
+          |$assetsAfter
+          |aOrig:
+          |$aOrig
+          |aUpdated:
+          |$aUpdated
+          |rOrig:
+          |$rOrig
+          |rUpdated:
+          |$rUpdated
+          |obOrig:
+          |${toJson(obOrig)}
+          |obUpdated:
+          |${toJson(obUpdated)}
+          |order:
+          |${toJson(order)}
+          |events:
+          |${events.mkString("\n")}
+          |eventsDiffs:
+          |${eventsDiffs.map{case (evt, (aDiff, rDiff)) => s"  evt: $evt\n  aDiff: $aDiff\n  rDiff: $rDiff"}.mkString("\n")}
+          |obOrig.clientsPortfolio:
+          |${obOrig.clientsPortfolio}
+          |order.clientSpend:
+          |${order.clientSpend}
+          |""".stripMargin |: assetsBefore.p.toSet == assetsAfter.p.toSet
+  }
 
 //  property("assets invariant") = forAll(testGen) {
 //    case (order1, order2) =>
