@@ -10,6 +10,7 @@ import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.blocking.Blocking
+import cats.syntax.option._
 import zio.console._
 import zio.nio.file.{Files, Path}
 import zio.stm.{STM, TMap, TQueue, TSemaphore}
@@ -18,14 +19,10 @@ import zio.{App, Task, URIO, ZIO}
 
 import scala.reflect.ClassTag
 
-sealed trait Command {
-  def pair: AssetPair
-}
+sealed trait Command
 object Command {
-  case class PlaceOrder(order: Order) extends Command {
-    override def pair: AssetPair = order.pair
-  }
-  case class Stop(pair: AssetPair) extends Command
+  case class PlaceOrder(order: Order) extends Command
+  case class Stop(clientId: ClientId) extends Command
 }
 
 object MainApp extends App {
@@ -52,15 +49,17 @@ object MainApp extends App {
 
       // consumer
       _ <- {
-        def process(command: Command) = command match {
-          case Command.PlaceOrder(order) => processOrder(availableRef, reservedRef, orderBooksRef)(order).ignore
-          case Command.Stop(pair)        => wait.release.commit
-        }
+        def process(order: Order) = processOrder(availableRef, reservedRef, orderBooksRef)(order).ignore
 
         // TODO: Replace by ZStream.fromPull
         def loop: ZIO[Any, Nothing, Nothing] =
           ZStream
             .fromEffect(consumerQueue.take.commit) // takeUpTo
+            .collectM {
+              case Command.PlaceOrder(order) => ZIO.succeed(order.some)
+              case _: Command.Stop           => wait.release.commit.map(_ => None)
+            }
+            .collect { case Some(x) => x }
             .groupByKey(_.pair) { (_, pairOrders) =>
               pairOrders.mapM(process)
             }
@@ -85,7 +84,7 @@ object MainApp extends App {
 
         validated.runDrain.fork
       }
-      _ <- wait.available.flatMap(x => STM.check(x >= orderBooksNumber)).commit
+      _ <- wait.available.flatMap(x => STM.check(x >= initialClientsPortfolio.size)).commit
       _ <- {
         availableRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x)  => Monoid.combine(r, Map(x))(groupForMap) } <*>
           reservedRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x) => Monoid.combine(r, Map(x))(groupForMap) } <*>
@@ -99,17 +98,17 @@ object MainApp extends App {
   private def validatePar(xs: ZStream[Any, Throwable, Order],
                           consumerQueue: TQueue[Command],
                           validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
-    xs.groupByKey(_.pair) { (pair, pairOrders) =>
-      pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(pair)).commit)).drain
+    xs.groupByKey(_.client) { (clientId, pairOrders) =>
+      pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(clientId)).commit)).drain
     }
 
   private def validateSeq(xs: ZStream[Any, Throwable, Order],
-                          allPairs: List[AssetPair],
+                          allClientIds: List[ClientId],
                           consumerQueue: TQueue[Command],
                           validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
     xs.mapM(validateAndReserve)
       .concat {
-        ZStream.fromEffect(consumerQueue.offerAll(allPairs.map(Command.Stop)).commit)
+        ZStream.fromEffect(consumerQueue.offerAll(allClientIds.map(Command.Stop)).commit)
       }
 
   private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Command])(
