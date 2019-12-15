@@ -9,12 +9,12 @@ import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import org.github.vsuharnikov.wavesexchange.stm.TMapOps
+import zio._
 import zio.blocking.Blocking
 import zio.console._
 import zio.nio.file.{Files, Path}
 import zio.stm.{STM, TMap, TQueue, TSemaphore}
 import zio.stream.ZStream
-import zio.{App, Task, URIO, ZIO}
 
 import scala.reflect.ClassTag
 
@@ -69,7 +69,7 @@ object MainApp extends App {
   private def validatePar(
       xs: ZStream[Any, Throwable, Order],
       consumerQueue: TQueue[Command],
-      validateAndReserve: Order => URIO[Any, Unit]
+      validateAndReserve: Order => UIO[Unit]
   ): ZStream[Any, Throwable, Unit] =
     xs.groupByKey(_.client) { (clientId, pairOrders) =>
       pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(clientId)).commit)).drain
@@ -77,7 +77,7 @@ object MainApp extends App {
 
   private def validateSeq(
       allClientIds: List[ClientId]
-  )(xs: ZStream[Any, Throwable, Order], consumerQueue: TQueue[Command], validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
+  )(xs: ZStream[Any, Throwable, Order], consumerQueue: TQueue[Command], validateAndReserve: Order => UIO[Unit]): ZStream[Any, Throwable, Unit] =
     xs.mapM(validateAndReserve)
       .concat {
         ZStream.fromEffect(consumerQueue.offerAll(allClientIds.map(Command.Stop)).commit)
@@ -111,7 +111,7 @@ object MainApp extends App {
       .commit
 
   // TODO ZIO RC18 interruptWhen
-  private def consumer(queue: TQueue[Command], wait: TSemaphore, consume: Order => URIO[Any, Unit]): ZStream[Any, Nothing, Unit] =
+  private def consumer(queue: TQueue[Command], wait: TSemaphore, consume: Order => UIO[Unit]): ZStream[Any, Nothing, Unit] =
     ZStream
       .fromEffect(queue.take.commit)
       .forever

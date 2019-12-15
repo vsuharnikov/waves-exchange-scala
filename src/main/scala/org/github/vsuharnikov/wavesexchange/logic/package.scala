@@ -42,22 +42,20 @@ package object logic {
       case _ => (orderBook.append(submitted), events.enqueue(OrderEvent.Placed(submitted)))
     }
 
-  def foldEvents(events: Queue[OrderEvent],
-                 aDiff: Map[ClientId, Portfolio] = Map.empty,
-                 rDiff: Map[ClientId, Portfolio] = Map.empty): (Map[ClientId, Portfolio], Map[ClientId, Portfolio]) =
+  def foldEvents(
+      events: Queue[OrderEvent],
+      aDiff: Map[ClientId, Portfolio] = Map.empty,
+      rDiff: Map[ClientId, Portfolio] = Map.empty
+  ): (Map[ClientId, Portfolio], Map[ClientId, Portfolio]) =
     events.foldLeft((aDiff, rDiff)) {
       case (r, evt) =>
         evt match {
-          // TODO because we match with counter price, we need unreserve more! But it should work ... we have reserved diff
           case OrderEvent.Executed(maker, taker) => r |+| execute(maker, taker)
           case _                                 => r
         }
     }
 
   def execute(counter: LimitOrder, submitted: LimitOrder): (Map[ClientId, Portfolio], Map[ClientId, Portfolio]) = {
-    // TODO same orders?
-    // TODO wrong price?
-
     val executedPricePerOne = counter.order.pricePerOne
     val executedAmount = Math.min(counter.restAmount, submitted.restAmount)
     val counterReceive = counter.order.receive(executedPricePerOne, executedAmount)
