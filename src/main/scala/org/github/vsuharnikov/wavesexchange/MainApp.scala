@@ -4,7 +4,7 @@ import cats.kernel.Monoid
 import cats.syntax.group.catsSyntaxGroup
 import cats.syntax.semigroup.catsSyntaxSemigroup
 import cats.syntax.show.showInterpolator
-import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId, ClientsPortfolio, Dollar, LimitOrder, Order, OrderBook, Portfolio}
+import org.github.vsuharnikov.wavesexchange.domain.{AssetAmount, AssetId, AssetPair, ClientId, ClientsPortfolio, Dollar, LimitOrder, Order, OrderBook, Portfolio}
 import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
@@ -29,6 +29,8 @@ object Command {
   case class Stop(clientId: ClientId) extends Command
 }
 
+case class ClientState(available: Portfolio, reserved: Portfolio)
+
 object MainApp extends App {
 
   val allAssetPairs = ('A' to 'D').toList.map(x => AssetPair(AssetId(x), Dollar))
@@ -46,8 +48,9 @@ object MainApp extends App {
         ZIO.fromEither(Csv.clients(xs, assets)).absorbWith(new ParseException(_))
       }
       wait <- STM.atomically(TSemaphore.make(0))
-      availableRef <- STM.atomically(TMap.fromIterable(initialClientsPortfolio))
-      reservedRef <- STM.atomically(TMap.empty[ClientId, Portfolio])
+      clientsRef <- STM.atomically(TMap.fromIterable {
+        initialClientsPortfolio.view.mapValues(ClientState(_, Monoid[Portfolio].empty))
+      })
       orderBooksRef <- STM.atomically(TMap.empty[AssetPair, OrderBook])
       consumerQueue <- STM.atomically(TQueue.make[Command](10000))
 
@@ -97,8 +100,7 @@ object MainApp extends App {
   }.commit
 
   private def processOrder(
-      availableRef: TMap[ClientId, Portfolio],
-      reservedRef: TMap[ClientId, Portfolio],
+      clientsRef: TMap[ClientId, ClientState],
       orderBooksRef: TMap[AssetPair, OrderBook]
   )(order: Order) =
     orderBooksRef
@@ -106,6 +108,7 @@ object MainApp extends App {
       .flatMap { orderBook =>
         val (updatedOrderBook, events) = append(orderBook, LimitOrder(order))
         val (availableDiff, reservedDiff) = foldEvents(events)
+        clientsRef.mergeMap()
         (orderBooksRef.put(order.pair, updatedOrderBook) <*> availableRef.mergeMap(availableDiff) <*> reservedRef.mergeMap(reservedDiff)).ignore
       }
       .commit

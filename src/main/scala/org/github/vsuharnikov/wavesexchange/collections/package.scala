@@ -13,7 +13,7 @@ package object collections {
   def groupForMap[K, V](implicit vGroup: Group[V]): Group[Map[K, V]] = new Group[Map[K, V]] {
     private val monoid = catsKernelStdMonoidForMap[K, V]
     override def inverse(a: Map[K, V]): Map[K, V] = a.map { case (k, v) => k -> vGroup.inverse(v) }
-    override def empty: Map[K, V] = monoid.empty
+    override val empty: Map[K, V] = monoid.empty
     override def combine(x: Map[K, V], y: Map[K, V]): Map[K, V] = monoid.combine(x, y)
   }
 }
