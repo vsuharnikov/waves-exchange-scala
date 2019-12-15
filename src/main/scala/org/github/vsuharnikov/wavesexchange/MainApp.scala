@@ -4,11 +4,11 @@ import cats.kernel.Monoid
 import cats.syntax.group.catsSyntaxGroup
 import cats.syntax.semigroup.catsSyntaxSemigroup
 import cats.syntax.show.showInterpolator
-import org.github.vsuharnikov.wavesexchange.collections.groupForMap
 import org.github.vsuharnikov.wavesexchange.domain.{AssetId, AssetPair, ClientId, ClientsPortfolio, Dollar, LimitOrder, Order, OrderBook, Portfolio}
 import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
+import org.github.vsuharnikov.wavesexchange.stm.TMapOps
 import zio.blocking.Blocking
 import zio.console._
 import zio.nio.file.{Files, Path}
@@ -30,6 +30,7 @@ object Command {
 }
 
 object MainApp extends App {
+
   val allAssetPairs = ('A' to 'D').toList.map(x => AssetPair(AssetId(x), Dollar))
   val orderBooksNumber = allAssetPairs.size
 
@@ -50,48 +51,18 @@ object MainApp extends App {
       orderBooksRef <- STM.atomically(TMap.empty[AssetPair, OrderBook])
       consumerQueue <- STM.atomically(TQueue.make[Command](10000))
 
-      // consumer
-      _ <- {
-        def consume(order: Order) = processOrder(availableRef, reservedRef, orderBooksRef)(order).ignore
+      _ <- consumer(consumerQueue, wait, processOrder(availableRef, reservedRef, orderBooksRef)(_).ignore).runDrain.fork
 
-        // TODO ZIO RC18 interruptWhen
-        ZStream
-          .fromEffect(consumerQueue.take.commit)
-          .forever
-          .groupByKey(_.clientId) { (_, orders) =>
-            orders
-              .mapM {
-                case Command.PlaceOrder(order) => consume(order)
-                case _                         => wait.release.commit
-              }
-          }
-          .runDrain
-          .fork
-      }
       // producer
       _ <- {
         val validateAndReserve = validateAndReserveOrder(availableRef, reservedRef, consumerQueue)(_: Order).ignore
-        val orders = Files
-          .lines((args.outputDir / "orders.txt").toFile)
-          .zipWithIndex
-          .map {
-            case (line, i) => Csv.order(i, line)
-          }
-          .collect { case Right(x) => x }
-
-        val validated = validatePar(orders, consumerQueue, validateAndReserve)
-//        val validated = validateSeq(orders, allAssetPairs, consumerQueue, validateAndReserve)
-
-        validated.runDrain.fork
+        def producer(orders: ZStream[Any, Throwable, Order]) = validatePar(orders, consumerQueue, validateAndReserve)
+        // validateSeq(allAssetPairs)(orders, consumerQueue, validateAndReserve)
+        producer(orders(args.outputDir / "orders.txt")).runDrain.fork
       }
       _ <- wait.available.flatMap(x => STM.check(x >= initialClientsPortfolio.size)).commit
-      _ <- {
-        availableRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x)  => Monoid.combine(r, Map(x))(groupForMap) } <*>
-          reservedRef.fold(Map.empty[ClientId, Portfolio]) { case (r, x) => Monoid.combine(r, Map(x))(groupForMap) } <*>
-          orderBooksRef.values
-      }.commit.flatMap {
-        case ((available, reserved), orderBooks) =>
-          printResults(initialClientsPortfolio, available, reserved, orderBooks)
+      _ <- (foldClientPortfolios(availableRef) <*> foldClientPortfolios(reservedRef) <*> orderBooksRef.values).commit.flatMap {
+        case ((available, reserved), orderBooks) => printResults(initialClientsPortfolio, available, reserved, orderBooks)
       }
     } yield ()
 
@@ -105,11 +76,8 @@ object MainApp extends App {
     }
 
   private def validateSeq(
-      xs: ZStream[Any, Throwable, Order],
-      allClientIds: List[ClientId],
-      consumerQueue: TQueue[Command],
-      validateAndReserve: Order => URIO[Any, Unit]
-  ): ZStream[Any, Throwable, Unit] =
+      allClientIds: List[ClientId]
+  )(xs: ZStream[Any, Throwable, Order], consumerQueue: TQueue[Command], validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
     xs.mapM(validateAndReserve)
       .concat {
         ZStream.fromEffect(consumerQueue.offerAll(allClientIds.map(Command.Stop)).commit)
@@ -138,11 +106,31 @@ object MainApp extends App {
       .flatMap { orderBook =>
         val (updatedOrderBook, events) = append(orderBook, LimitOrder(order))
         val (availableDiff, reservedDiff) = foldEvents(events)
-        orderBooksRef.put(order.pair, updatedOrderBook) <*>
-          availableDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p)) => (r <*> availableRef.merge(clientId, p)(Monoid.combine)).ignore } <*>
-          reservedDiff.foldLeft(STM.succeed(())) { case (r, (clientId, p))  => (r <*> reservedRef.merge(clientId, p)(Monoid.combine)).ignore }
+        (orderBooksRef.put(order.pair, updatedOrderBook) <*> availableRef.mergeMap(availableDiff) <*> reservedRef.mergeMap(reservedDiff)).ignore
       }
       .commit
+
+  // TODO ZIO RC18 interruptWhen
+  private def consumer(queue: TQueue[Command], wait: TSemaphore, consume: Order => URIO[Any, Unit]): ZStream[Any, Nothing, Unit] =
+    ZStream
+      .fromEffect(queue.take.commit)
+      .forever
+      .groupByKey(_.clientId) { (_, orders) =>
+        orders
+          .mapM {
+            case Command.PlaceOrder(order) => consume(order)
+            case _                         => wait.release.commit
+          }
+      }
+
+  private def orders(from: Path): ZStream[Any, Throwable, Order] =
+    Files
+      .lines(from.toFile)
+      .zipWithIndex
+      .map { case (line, i) => Csv.order(i, line) }
+      .collect { case Right(x) => x }
+
+  private def foldClientPortfolios(xs: TMap[ClientId, Portfolio]) = xs.foldMapM(Map.empty[ClientId, Portfolio])(Function.untupled(Map(_)))
 
   private case class Arguments(outputDir: Path)
 
