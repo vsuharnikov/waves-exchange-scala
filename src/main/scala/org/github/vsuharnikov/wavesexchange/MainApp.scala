@@ -10,7 +10,6 @@ import org.github.vsuharnikov.wavesexchange.io._
 import org.github.vsuharnikov.wavesexchange.logic._
 import org.github.vsuharnikov.wavesexchange.source.Csv
 import zio.blocking.Blocking
-import cats.syntax.option._
 import zio.console._
 import zio.nio.file.{Files, Path}
 import zio.stm.{STM, TMap, TQueue, TSemaphore}
@@ -19,9 +18,14 @@ import zio.{App, Task, URIO, ZIO}
 
 import scala.reflect.ClassTag
 
-sealed trait Command
+sealed trait Command {
+  def clientId: ClientId
+}
+
 object Command {
-  case class PlaceOrder(order: Order) extends Command
+  case class PlaceOrder(order: Order) extends Command {
+    override def clientId: ClientId = order.client
+  }
   case class Stop(clientId: ClientId) extends Command
 }
 
@@ -35,7 +39,6 @@ object MainApp extends App {
     if (args.isEmpty) Task.fail(new IllegalArgumentException("Specify a directory with clients.txt and orders.txt"))
     else Task(Arguments(Path(args.head)))
 
-  // TODO solve IDEA issues
   private def logic(args: Arguments): ZIO[Console with Blocking, Throwable, Unit] =
     for {
       initialClientsPortfolio <- Files.readAllLines(args.outputDir / "clients.txt").flatMap { xs =>
@@ -49,24 +52,21 @@ object MainApp extends App {
 
       // consumer
       _ <- {
-        def process(order: Order) = processOrder(availableRef, reservedRef, orderBooksRef)(order).ignore
+        def consume(order: Order) = processOrder(availableRef, reservedRef, orderBooksRef)(order).ignore
 
-        // TODO: Replace by ZStream.fromPull
-        def loop: ZIO[Any, Nothing, Nothing] =
-          ZStream
-            .fromEffect(consumerQueue.take.commit) // takeUpTo
-            .collectM {
-              case Command.PlaceOrder(order) => ZIO.succeed(order.some)
-              case _: Command.Stop           => wait.release.commit.map(_ => None)
-            }
-            .collect { case Some(x) => x }
-            .groupByKey(_.pair) { (_, pairOrders) =>
-              pairOrders.mapM(process)
-            }
-            .runDrain
-            .flatMap(_ => loop)
-
-        loop.fork
+        // TODO ZIO RC18 interruptWhen
+        ZStream
+          .fromEffect(consumerQueue.take.commit)
+          .forever
+          .groupByKey(_.clientId) { (_, orders) =>
+            orders
+              .mapM {
+                case Command.PlaceOrder(order) => consume(order)
+                case _                         => wait.release.commit
+              }
+          }
+          .runDrain
+          .fork
       }
       // producer
       _ <- {
@@ -95,24 +95,29 @@ object MainApp extends App {
       }
     } yield ()
 
-  private def validatePar(xs: ZStream[Any, Throwable, Order],
-                          consumerQueue: TQueue[Command],
-                          validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
+  private def validatePar(
+      xs: ZStream[Any, Throwable, Order],
+      consumerQueue: TQueue[Command],
+      validateAndReserve: Order => URIO[Any, Unit]
+  ): ZStream[Any, Throwable, Unit] =
     xs.groupByKey(_.client) { (clientId, pairOrders) =>
       pairOrders.mapM(validateAndReserve).concat(ZStream.fromEffect(consumerQueue.offer(Command.Stop(clientId)).commit)).drain
     }
 
-  private def validateSeq(xs: ZStream[Any, Throwable, Order],
-                          allClientIds: List[ClientId],
-                          consumerQueue: TQueue[Command],
-                          validateAndReserve: Order => URIO[Any, Unit]): ZStream[Any, Throwable, Unit] =
+  private def validateSeq(
+      xs: ZStream[Any, Throwable, Order],
+      allClientIds: List[ClientId],
+      consumerQueue: TQueue[Command],
+      validateAndReserve: Order => URIO[Any, Unit]
+  ): ZStream[Any, Throwable, Unit] =
     xs.mapM(validateAndReserve)
       .concat {
         ZStream.fromEffect(consumerQueue.offerAll(allClientIds.map(Command.Stop)).commit)
       }
 
   private def validateAndReserveOrder(availableRef: TMap[ClientId, Portfolio], reservedRef: TMap[ClientId, Portfolio], sink: TQueue[Command])(
-      order: Order) = {
+      order: Order
+  ) = {
     val requirements = order.spend
     for {
       available <- availableRef.getOrElse(order.client, Portfolio.group.empty)
@@ -123,9 +128,11 @@ object MainApp extends App {
     } yield ()
   }.commit
 
-  private def processOrder(availableRef: TMap[ClientId, Portfolio],
-                           reservedRef: TMap[ClientId, Portfolio],
-                           orderBooksRef: TMap[AssetPair, OrderBook])(order: Order) =
+  private def processOrder(
+      availableRef: TMap[ClientId, Portfolio],
+      reservedRef: TMap[ClientId, Portfolio],
+      orderBooksRef: TMap[AssetPair, OrderBook]
+  )(order: Order) =
     orderBooksRef
       .getOrElse(order.pair, OrderBook.empty)
       .flatMap { orderBook =>
@@ -144,10 +151,12 @@ object MainApp extends App {
 
   private case class InvalidOrder(index: Int, order: Order, reason: String)
 
-  private def printResults(initialClientsPortfolio: Map[ClientId, Portfolio],
-                           finalClientsPortfolio: Map[ClientId, Portfolio],
-                           reserved: Map[ClientId, Portfolio],
-                           updatedObs: List[OrderBook]) = {
+  private def printResults(
+      initialClientsPortfolio: Map[ClientId, Portfolio],
+      finalClientsPortfolio: Map[ClientId, Portfolio],
+      reserved: Map[ClientId, Portfolio],
+      updatedObs: List[OrderBook]
+  ) = {
     val obPortfolio = Monoid.combineAll(updatedObs.map(_.clientsPortfolio))
 
     putStrLn(
@@ -161,9 +170,7 @@ object MainApp extends App {
               |${ClientsPortfolio(finalClientsPortfolio)}
               |obPortfolio:
               |$obPortfolio""".stripMargin
-    ) *> putStrLn(s"""Final order books:
-         |${updatedObs.mkString("\n")}
-         |reserved:
+    ) *> putStrLn(s"""reserved:
          |${reserved.mkString("\n")}
          |""".stripMargin)
   }

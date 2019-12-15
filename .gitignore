@@ -2,3 +2,7 @@
 !.scalafmt.conf
 !.gitignore
 target
+
+.metals/
+.bloop/
+project/metals.sbt
